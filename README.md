@@ -6,15 +6,24 @@ A shared to-do list + calendar app for Rhodri & Becky. Real-time sync via Supaba
 
 ## Features
 
-- **Board / List / Calendar** views — switch between them at any time
+- **Board / List / Calendar / Notes** views — switch between them at any time
 - **Kanban board** (To Do → In Progress → Done) inspired by Trello
-- **Calendar** with task dots, tap any day to see/add tasks
-- **Assignees** — Rhodri, Becky, or Both
+- **Calendar** with both tasks and events; multi-day event bars (e.g. "Holiday in India")
+- **Events** separate from tasks — birthdays, anniversaries, appointments, holidays, with yearly/monthly/weekly repeat
+- **Overview panel** — live count of overdue / due today / open / done with a progress bar and persistent reminders
+- **Per-person colour coding** — Rhodri (blue), Becky (lilac), Lana (orange), All (green)
+- **Countdowns** — days until your next big events
+- **Shared notes board** — jot ideas, lists, reminders
+- **Assignees** — Rhodri, Becky, Lana, or All
 - **Categories** — Home, Errands, Social, Dates, Finance, Health (colour-coded)
-- **Custom reminders** per task — 15 min up to 1 week before due
+- **Custom reminders** per task & event — from "at time" up to 1 week before
 - **Browser push notifications** + app badge count
-- **Real-time sync** — changes appear on both devices within ~1 second
+- **Real-time sync** — changes appear on all devices within ~1 second
 - **Offline support** — works without internet, syncs when back online
+
+> **Already have an older version deployed?** You only need to run the two new
+> `create table` blocks (events, notes) plus their indexes, policies and
+> realtime lines from the SQL below — the tasks table is unchanged.
 
 ---
 
@@ -29,6 +38,7 @@ A shared to-do list + calendar app for Rhodri & Becky. Real-time sync via Supaba
 ### 1b. Run this SQL in the SQL Editor
 
 ```sql
+-- ── TASKS ──
 create table if not exists tasks (
   id               uuid primary key default gen_random_uuid(),
   household_id     text not null,
@@ -42,17 +52,51 @@ create table if not exists tasks (
   created_at       timestamptz not null default now()
 );
 
--- Index for fast household queries
-create index if not exists tasks_household_idx on tasks(household_id);
+-- ── EVENTS (calendar) ──
+create table if not exists events (
+  id               uuid primary key default gen_random_uuid(),
+  household_id     text not null,
+  title            text not null,
+  event_type       text not null default 'other',
+  assigned_to      text not null default 'both',
+  start_date       date not null,
+  end_date         date,
+  all_day          boolean not null default true,
+  start_time       text,
+  recur            text not null default 'none',
+  reminder_minutes integer,
+  notes            text,
+  created_at       timestamptz not null default now()
+);
 
--- Enable Row Level Security (optional but recommended)
-alter table tasks enable row level security;
+-- ── NOTES (memo board) ──
+create table if not exists notes (
+  id           uuid primary key default gen_random_uuid(),
+  household_id text not null,
+  text         text not null,
+  author       text not null default 'both',
+  created_at   timestamptz not null default now()
+);
 
--- Allow all operations for now (tighten later if needed)
-create policy "allow all" on tasks for all using (true) with check (true);
+-- Indexes for fast household queries
+create index if not exists tasks_household_idx  on tasks(household_id);
+create index if not exists events_household_idx on events(household_id);
+create index if not exists notes_household_idx  on notes(household_id);
 
--- Enable real-time
+-- Enable Row Level Security
+alter table tasks  enable row level security;
+alter table events enable row level security;
+alter table notes  enable row level security;
+
+-- Allow all operations (tighten later if you ever want)
+create policy "allow all tasks"  on tasks  for all using (true) with check (true);
+create policy "allow all events" on events for all using (true) with check (true);
+create policy "allow all notes"  on notes  for all using (true) with check (true);
+
+-- Enable real-time on all three
 alter publication supabase_realtime add table tasks;
+alter publication supabase_realtime add table events;
+alter publication supabase_realtime add table notes;
 ```
 
 ### 1c. Get your keys

@@ -1,4 +1,4 @@
-// notification.js — handles browser push + in-app badge notifications
+// notifications.js — browser push + in-app badge + persistent reminders
 
 export async function requestNotificationPermission() {
   if (!('Notification' in window)) return 'unsupported'
@@ -7,67 +7,71 @@ export async function requestNotificationPermission() {
   return result
 }
 
+if (typeof window !== 'undefined' && !window.__notifTimers) window.__notifTimers = {}
+
+function clearKey(key) {
+  if (window.__notifTimers[key]) {
+    clearTimeout(window.__notifTimers[key])
+    delete window.__notifTimers[key]
+  }
+}
+
+// ─── Tasks ────────────────────────────────────────────────────────────────────
 export function scheduleNotification(task) {
-  if (!task.due_date || !task.reminder_minutes) return
-
-  const dueMs = new Date(task.due_date).getTime()
-  const nowMs = Date.now()
+  if (!task.due_date || task.reminder_minutes == null || task.completed) return
+  const dueMs = new Date(`${task.due_date}T09:00:00`).getTime()
   const fireMs = dueMs - task.reminder_minutes * 60 * 1000
-
-  if (fireMs <= nowMs) return // already passed
-
-  const delayMs = fireMs - nowMs
-  const key = `notif-${task.id}-${task.reminder_minutes}`
-
-  // Clear any existing timeout for this task
-  const existingId = window.__notifTimers?.[key]
-  if (existingId) clearTimeout(existingId)
-
-  if (!window.__notifTimers) window.__notifTimers = {}
-
-  window.__notifTimers[key] = setTimeout(() => {
-    fireNotification(task)
-  }, delayMs)
+  const delayMs = fireMs - Date.now()
+  const key = `task-${task.id}`
+  clearKey(key)
+  if (delayMs <= 0) return
+  window.__notifTimers[key] = setTimeout(() => fireTaskNotification(task), Math.min(delayMs, 2 ** 31 - 1))
 }
 
-export function cancelNotification(taskId) {
-  if (!window.__notifTimers) return
-  Object.keys(window.__notifTimers).forEach(key => {
-    if (key.startsWith(`notif-${taskId}-`)) {
-      clearTimeout(window.__notifTimers[key])
-      delete window.__notifTimers[key]
-    }
-  })
-}
-
-function fireNotification(task) {
+function fireTaskNotification(task) {
   if (Notification.permission !== 'granted') return
-
-  const assignee = task.assigned_to === 'both' ? 'Rhodri & Becky' : task.assigned_to
   const mins = task.reminder_minutes
-  const timeLabel = mins >= 1440
-    ? `${Math.round(mins / 1440)} day(s)`
-    : mins >= 60
-    ? `${Math.round(mins / 60)} hour(s)`
-    : `${mins} min(s)`
-
-  new Notification(`⏰ Couple's Hub — ${task.title}`, {
-    body: `Due in ${timeLabel} · Assigned to ${assignee}`,
-    icon: '/icon-192.png',
-    badge: '/icon-192.png',
-    tag: `task-${task.id}`,
-    requireInteraction: true,
+  const timeLabel = mins >= 1440 ? `${Math.round(mins / 1440)} day(s)` : mins >= 60 ? `${Math.round(mins / 60)} hour(s)` : `${mins} min`
+  new Notification(`📋 ${task.title}`, {
+    body: `Due in ${timeLabel}`,
+    icon: '/icon-192.png', badge: '/icon-192.png',
+    tag: `task-${task.id}`, requireInteraction: true,
   })
 }
 
-// Reschedule all pending tasks on app load
-export function rescheduleAll(tasks) {
-  tasks.forEach(task => {
-    if (!task.completed) scheduleNotification(task)
+export function cancelNotification(taskId) { clearKey(`task-${taskId}`) }
+
+// ─── Events ───────────────────────────────────────────────────────────────────
+export function scheduleEventNotification(ev) {
+  if (ev.reminder_minutes == null) return
+  const timeStr = ev.all_day ? '09:00:00' : (ev.start_time || '09:00') + ':00'
+  const startMs = new Date(`${ev.start_date}T${timeStr}`).getTime()
+  const fireMs = startMs - ev.reminder_minutes * 60 * 1000
+  const delayMs = fireMs - Date.now()
+  const key = `event-${ev.id}`
+  clearKey(key)
+  if (delayMs <= 0) return
+  window.__notifTimers[key] = setTimeout(() => fireEventNotification(ev), Math.min(delayMs, 2 ** 31 - 1))
+}
+
+function fireEventNotification(ev) {
+  if (Notification.permission !== 'granted') return
+  new Notification(`📅 ${ev.title}`, {
+    body: ev.all_day ? 'Today' : 'Starting soon',
+    icon: '/icon-192.png', badge: '/icon-192.png',
+    tag: `event-${ev.id}`, requireInteraction: true,
   })
 }
 
-// Update app badge count
+export function cancelEventNotification(id) { clearKey(`event-${id}`) }
+
+// ─── Reschedule everything on load ────────────────────────────────────────────
+export function rescheduleAll(tasks = [], events = []) {
+  tasks.forEach(t => { if (!t.completed) scheduleNotification(t) })
+  events.forEach(e => scheduleEventNotification(e))
+}
+
+// ─── App badge ────────────────────────────────────────────────────────────────
 export function updateBadge(count) {
   if ('setAppBadge' in navigator) {
     if (count > 0) navigator.setAppBadge(count).catch(() => {})
