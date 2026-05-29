@@ -6,24 +6,36 @@ A shared to-do list + calendar app for Rhodri & Becky. Real-time sync via Supaba
 
 ## Features
 
-- **Board / List / Calendar / Notes** views — switch between them at any time
-- **Kanban board** (To Do → In Progress → Done) inspired by Trello
-- **Calendar** with both tasks and events; multi-day event bars (e.g. "Holiday in India")
-- **Events** separate from tasks — birthdays, anniversaries, appointments, holidays, with yearly/monthly/weekly repeat
-- **Overview panel** — live count of overdue / due today / open / done with a progress bar and persistent reminders
+**Views:** Board (Kanban) · List · Calendar · Shopping · Notes
+
+- **Recurring tasks** — daily / weekly / monthly / yearly chores that auto-recreate when ticked off
+- **Chore rotation** — recurring tasks can rotate between people each time they're done
+- **Natural-language quick-add** — type "Walk Lana tomorrow 8am every day for becky" and it fills in date, time, repeat and assignee
+- **Streaks & points** — household completion streak + a weekly leaderboard and all-time points per person
+- **Shopping list** — shared, category-grouped, real-time grocery list with a basket
+- **Vacation / away mode** — mark someone away; their recurring chores pause and rotated ones skip them
+- **Snooze** — push an overdue task to tomorrow / 3 days / next week in one tap
+- **Task templates** — save routines (food shop, holiday prep) and spawn all their tasks at once
+- **Subtasks / checklists** — break a task into steps with a progress bar
+- **Calendar subscription feed** — subscribe in Google/Apple Calendar so Hub events show in your phone calendar
+- **Calendar events** separate from tasks — birthdays, anniversaries, holidays, appointments, with repeat
+- **Multi-day events** — holidays span as a bar across the calendar
+- **Overview panel** — live overdue / today / open / done counts with progress bar and reminders
 - **Per-person colour coding** — Rhodri (blue), Becky (lilac), Lana (orange), All (green)
 - **Countdowns** — days until your next big events
-- **Shared notes board** — jot ideas, lists, reminders
-- **Assignees** — Rhodri, Becky, Lana, or All
-- **Categories** — Home, Errands, Social, Dates, Finance, Health (colour-coded)
-- **Custom reminders** per task & event — from "at time" up to 1 week before
+- **Custom reminders** per task & event — "at time" up to 1 week before
 - **Browser push notifications** + app badge count
-- **Real-time sync** — changes appear on all devices within ~1 second
-- **Offline support** — works without internet, syncs when back online
+- **Real-time sync** across all devices · **Offline support**
 
-> **Already have an older version deployed?** You only need to run the two new
-> `create table` blocks (events, notes) plus their indexes, policies and
-> realtime lines from the SQL below — the tasks table is unchanged.
+### ✨ Premium upgrade
+- **Glass redesign** — deep, dark frosted-glass interface with depth and glow; your three colours as the accent lights
+- **AI Assistant** — “Plan our week” fairly splits the chores, plus free-form suggestions, powered by your own Anthropic API key
+- **Date-night generator** — pick a vibe, budget and time; get fresh ideas (AI or built-in) and send them to your calendar
+- **Us dashboard** — a shared **couple level** you climb together with XP, **badges** to unlock, a gentle **relationship pulse** check-in, and **reward coupons** you each set for the other
+
+> **Upgrading from an older version?** Just run the whole SQL block below again — it's
+> safe to re-run (everything uses `if not exists` / `add column if not exists`). Your
+> existing tasks and events are preserved; the new columns and tables are simply added.
 
 ---
 
@@ -49,8 +61,20 @@ create table if not exists tasks (
   due_date         date,
   reminder_minutes integer,
   completed        boolean not null default false,
+  recur            text not null default 'none',
+  completed_at     timestamptz,
+  snoozed_until    timestamptz,
+  rotation         text,
+  subtasks         jsonb not null default '[]',
   created_at       timestamptz not null default now()
 );
+
+-- If you already had a tasks table from an earlier version, add the new columns:
+alter table tasks add column if not exists recur         text not null default 'none';
+alter table tasks add column if not exists completed_at  timestamptz;
+alter table tasks add column if not exists snoozed_until timestamptz;
+alter table tasks add column if not exists rotation      text;
+alter table tasks add column if not exists subtasks      jsonb not null default '[]';
 
 -- ── EVENTS (calendar) ──
 create table if not exists events (
@@ -78,25 +102,109 @@ create table if not exists notes (
   created_at   timestamptz not null default now()
 );
 
--- Indexes for fast household queries
-create index if not exists tasks_household_idx  on tasks(household_id);
-create index if not exists events_household_idx on events(household_id);
-create index if not exists notes_household_idx  on notes(household_id);
+-- ── SHOPPING LIST ──
+create table if not exists shopping (
+  id           uuid primary key default gen_random_uuid(),
+  household_id text not null,
+  item         text not null,
+  qty          text,
+  category     text not null default 'other',
+  checked      boolean not null default false,
+  added_by     text not null default 'both',
+  created_at   timestamptz not null default now()
+);
 
--- Enable Row Level Security
-alter table tasks  enable row level security;
-alter table events enable row level security;
-alter table notes  enable row level security;
+-- ── TEMPLATES ──
+create table if not exists templates (
+  id           uuid primary key default gen_random_uuid(),
+  household_id text not null,
+  name         text not null,
+  items        jsonb not null default '[]',
+  created_at   timestamptz not null default now()
+);
 
--- Allow all operations (tighten later if you ever want)
-create policy "allow all tasks"  on tasks  for all using (true) with check (true);
-create policy "allow all events" on events for all using (true) with check (true);
-create policy "allow all notes"  on notes  for all using (true) with check (true);
+-- ── SETTINGS (vacation mode etc.) ──
+create table if not exists settings (
+  household_id text primary key,
+  away         jsonb not null default '[]'
+);
 
--- Enable real-time on all three
+create table if not exists moods (
+  id           text primary key,
+  household_id text not null,
+  person       text not null,
+  level        int  not null,
+  note         text default '',
+  date         text not null,
+  created_at   timestamptz default now()
+);
+
+create table if not exists rewards (
+  id           text primary key,
+  household_id text not null,
+  title        text not null,
+  emoji        text default '🎁',
+  cost         int  not null default 0,
+  created_by   text not null,
+  redeemed_by  text,
+  redeemed_at  timestamptz,
+  created_at   timestamptz default now()
+);
+
+create table if not exists date_ideas (
+  id           text primary key,
+  household_id text not null,
+  title        text not null,
+  description  text default '',
+  vibe         text,
+  budget       text,
+  done         boolean default false,
+  done_at      timestamptz,
+  created_at   timestamptz default now()
+);
+
+-- Indexes
+create index if not exists tasks_household_idx      on tasks(household_id);
+create index if not exists events_household_idx     on events(household_id);
+create index if not exists notes_household_idx      on notes(household_id);
+create index if not exists shopping_household_idx   on shopping(household_id);
+create index if not exists templates_household_idx  on templates(household_id);
+create index if not exists moods_household_idx      on moods(household_id);
+create index if not exists rewards_household_idx    on rewards(household_id);
+create index if not exists date_ideas_household_idx on date_ideas(household_id);
+
+-- Row Level Security
+alter table tasks      enable row level security;
+alter table events     enable row level security;
+alter table notes      enable row level security;
+alter table shopping   enable row level security;
+alter table templates  enable row level security;
+alter table settings   enable row level security;
+alter table moods      enable row level security;
+alter table rewards    enable row level security;
+alter table date_ideas enable row level security;
+
+-- Allow-all policies (tighten later if you ever want)
+create policy "allow all tasks"      on tasks      for all using (true) with check (true);
+create policy "allow all events"     on events     for all using (true) with check (true);
+create policy "allow all notes"      on notes      for all using (true) with check (true);
+create policy "allow all shopping"   on shopping   for all using (true) with check (true);
+create policy "allow all templates"  on templates  for all using (true) with check (true);
+create policy "allow all settings"   on settings   for all using (true) with check (true);
+create policy "allow all moods"      on moods      for all using (true) with check (true);
+create policy "allow all rewards"    on rewards    for all using (true) with check (true);
+create policy "allow all date_ideas" on date_ideas for all using (true) with check (true);
+
+-- Real-time
 alter publication supabase_realtime add table tasks;
 alter publication supabase_realtime add table events;
 alter publication supabase_realtime add table notes;
+alter publication supabase_realtime add table shopping;
+alter publication supabase_realtime add table templates;
+alter publication supabase_realtime add table settings;
+alter publication supabase_realtime add table moods;
+alter publication supabase_realtime add table rewards;
+alter publication supabase_realtime add table date_ideas;
 ```
 
 ### 1c. Get your keys
@@ -130,9 +238,12 @@ Open `http://localhost:5173`
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
    - `VITE_HOUSEHOLD_ID` (e.g. `rhodri-becky-hub`)
+   - `ANTHROPIC_API_KEY` — *optional, for the AI features.* Get one at [console.anthropic.com](https://console.anthropic.com). This stays server-side and is never exposed to the browser. (Optionally `ANTHROPIC_MODEL` to override the default `claude-sonnet-4-6`.)
 4. Click **Deploy** — you'll get a URL like `https://couples-hub.vercel.app`
 
 Both of you use the **same URL** — that's what ties your data together.
+
+> **No API key?** The app still works fully — the date-night generator falls back to a built-in idea bank, and the AI Assistant simply asks you to add a key. Add the key any time to switch the AI on.
 
 ---
 
