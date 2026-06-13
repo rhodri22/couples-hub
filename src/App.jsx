@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import {
-  Plus, X, Check, List, Columns, Bell, BellOff, ChevronLeft, ChevronRight,
+  Plus, X, Check, List, Columns, Bell, BellOff, ChevronLeft, ChevronRight, Palette,
   RefreshCw, AlertCircle, Pencil, Trash2, Clock, Heart, CalendarDays, StickyNote,
   CalendarHeart, AlarmClock, Flame, Trophy, Plane, LayoutTemplate,
   Sparkles, Repeat, Users, MoreHorizontal, CalendarPlus,
@@ -56,6 +56,14 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState('idle')
   const [notifPerm, setNotifPerm]   = useState(typeof Notification !== 'undefined' ? Notification.permission : 'default')
   const [filterPerson, setFilterPerson] = useState('all')
+  const [theme, setTheme] = useState(() => { try { return localStorage.getItem('hub-theme') || 'lightgreen' } catch { return 'lightgreen' } })
+  const [themeMenu, setThemeMenu] = useState(false)
+  useEffect(() => { document.documentElement.setAttribute('data-theme', theme); try { localStorage.setItem('hub-theme', theme) } catch {} }, [theme])
+  const THEMES = [
+    { id: 'lightgreen', label: 'Light green', sw: 'linear-gradient(135deg,#7cc24a,#e85d8a)' },
+    { id: 'whimsical',  label: 'Whimsical',   sw: 'linear-gradient(135deg,#8a5fd6,#ff77b5)' },
+    { id: 'doggy',      label: 'Doggy',        sw: 'linear-gradient(135deg,#c8842b,#e8744f)' },
+  ]
   const [filterCat, setFilterCat] = useState('all')
   const [calMonth, setCalMonth] = useState(new Date())
 
@@ -113,7 +121,11 @@ export default function App() {
   async function saveTask(task) {
     setSyncStatus('syncing')
     const row = normalizeAssign({ ...task, household_id: HOUSEHOLD_ID })
-    if (supabase) { const { error } = await supabase.from('tasks').upsert(row); if (error) { setSyncStatus('offline'); showError(`Couldn't save task — ${error.message}`); return } }
+    if (supabase) {
+      const r = await resilientUpsert('tasks', row)
+      if (!r.ok) { setSyncStatus('offline'); showError(`Couldn't save task — ${r.message}`); return }
+      if (r.dropped.includes('assignees') && !_migrateNudged) { _migrateNudged = true; showError('Saved — but with a single assignee only. To assign several people, run the latest database update (schema.sql) in Supabase → SQL Editor.') }
+    }
     setTasks(prev => { const i = prev.findIndex(t => t.id === row.id); if (i >= 0) { const n = [...prev]; n[i] = row; return n } return [row, ...prev] })
     scheduleNotification(row); flash()
   }
@@ -149,8 +161,9 @@ export default function App() {
     setSyncStatus('syncing')
     const row = normalizeAssign({ ...ev, household_id: HOUSEHOLD_ID })
     if (supabase) {
-      const { error } = await supabase.from('events').upsert(row)
-      if (error) { setSyncStatus('offline'); showError(`Couldn't save event — ${error.message}`); return { ok: false, message: error.message } }
+      const r = await resilientUpsert('events', row)
+      if (!r.ok) { setSyncStatus('offline'); showError(`Couldn't save event — ${r.message}`); return { ok: false, message: r.message } }
+      if (r.dropped.includes('assignees') && !_migrateNudged) { _migrateNudged = true; showError('Saved — but with a single assignee only. To assign several people, run the latest database update (schema.sql) in Supabase → SQL Editor.') }
     }
     setEvents(prev => { const i = prev.findIndex(e => e.id === row.id); if (i >= 0) { const n = [...prev]; n[i] = row; return n } return [...prev, row] })
     scheduleEventNotification(row); flash()
@@ -292,6 +305,18 @@ export default function App() {
           <h1 className="app-title">Couple's Hub</h1>
         </div>
         <div className="header-right">
+          <div className="theme-wrap">
+            <button className="icon-btn" onClick={() => setThemeMenu(m => !m)} title="Theme"><Palette size={16} /></button>
+            {themeMenu && (
+              <div className="theme-menu">
+                {THEMES.map(tm => (
+                  <button key={tm.id} className={theme === tm.id ? 'on' : ''} onClick={() => { setTheme(tm.id); setThemeMenu(false) }}>
+                    <span className="theme-sw" style={{ background: tm.sw }} />{tm.label}{theme === tm.id && <Check size={14} className="tm-check" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button className="icon-btn ai-btn" onClick={() => setAiModal(true)} title="AI assistant">
             <Wand2 size={16} />
           </button>
@@ -501,6 +526,23 @@ function KanbanView({ tasks, away, onEdit, onDelete, onToggle, onMove, onSnooze,
 }
 
 // ─── Task card (#1 recur badge, #2 rotation, #7 snooze, #9 subtasks) ──────────
+let _migrateNudged = false
+async function resilientUpsert(table, row) {
+  let payload = { ...row }
+  const dropped = []
+  for (let i = 0; i < 6; i++) {
+    const { error } = await supabase.from(table).upsert(payload)
+    if (!error) return { ok: true, dropped }
+    const m = error.message || ''
+    const col = m.match(/Could not find the '([^']+)' column/)
+    if (col && (col[1] in payload) && !['id', 'household_id', 'title'].includes(col[1])) {
+      delete payload[col[1]]; dropped.push(col[1]); continue
+    }
+    return { ok: false, message: m }
+  }
+  return { ok: false, message: 'Could not save after several attempts.' }
+}
+
 function AssigneeBadges({ item }) {
   const people = getAssignees(item)
   const show = people.length ? people : [getPerson('both')]
