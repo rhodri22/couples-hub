@@ -57,6 +57,20 @@ export const RECUR_OPTIONS = [
 // ─── Lookups ──────────────────────────────────────────────────────────────────
 export const getCat       = id => CATEGORIES.find(c => c.id === id) || CATEGORIES[0]
 export const getPerson    = id => PEOPLE.find(p => p.id === id) || PEOPLE[3]
+export const ASSIGNABLE = PEOPLE.filter(p => p.id !== 'both')
+export const getAssignees = item => {
+  let ids = Array.isArray(item?.assignees) && item.assignees.length ? item.assignees : (item?.assigned_to ? [item.assigned_to] : [])
+  if (ids.includes('both')) ids = ['rhodri', 'becky', 'lana']
+  ids = [...new Set(ids)].filter(id => ['rhodri', 'becky', 'lana'].includes(id))
+  return ids.map(id => PEOPLE.find(p => p.id === id)).filter(Boolean)
+}
+export const assigneeIds = item => getAssignees(item).map(p => p.id)
+export const primaryPerson = item => getAssignees(item)[0] || getPerson('both')
+export const normalizeAssign = row => {
+  const ids = assigneeIds(row)
+  const assigned_to = ids.length === 3 ? 'both' : (ids.length === 1 ? ids[0] : (ids[0] || 'both'))
+  return { ...row, assignees: ids, assigned_to }
+}
 export const getEventType = id => EVENT_TYPES.find(e => e.id === id) || EVENT_TYPES[5]
 
 export function genId() {

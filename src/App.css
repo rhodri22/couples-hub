@@ -1,22 +1,22 @@
 /* ── Variables (v4 premium glass) ── */
 :root {
-  --bg:        #070b14;
-  --bg-2:      rgba(255,255,255,0.045);   /* glass panel */
-  --bg-3:      rgba(255,255,255,0.028);   /* recessed */
-  --bg-4:      rgba(255,255,255,0.085);   /* raised / hover */
-  --line:      rgba(255,255,255,0.10);    /* hairline */
-  --line-2:    rgba(255,255,255,0.16);
-  --blue-1:    #1a3a6b;
-  --blue-2:    #2d6a9f;
-  --blue-3:    #4a90d9;
-  --blue-4:    #7ec8e3;
-  --blue-5:    #b8dff5;
-  --ink-1:     #eef5ff;
-  --ink-2:     #b9cfe6;
-  --ink-3:     #8aa4c2;
-  --ink-4:     #5a7493;
-  --accent:    #e06b9a;
-  --green:     #56d68a;
+  --bg:        #1a271d;                   /* deep herb green, lifted */
+  --bg-2:      rgba(216,240,176,0.055);   /* herb glass panel */
+  --bg-3:      rgba(216,240,176,0.032);   /* recessed */
+  --bg-4:      rgba(216,240,176,0.10);    /* raised / hover */
+  --line:      rgba(210,236,176,0.13);    /* hairline */
+  --line-2:    rgba(210,236,176,0.22);
+  --blue-1:    #1f3a22;   /* leaf ramp (primary/structural) */
+  --blue-2:    #356b39;
+  --blue-3:    #5aa64b;
+  --blue-4:    #9fd96a;   /* lime */
+  --blue-5:    #d6f0a8;   /* pale lime */
+  --ink-1:     #f2f7ea;   /* warm cream */
+  --ink-2:     #d0e0c4;
+  --ink-3:     #a6bf99;
+  --ink-4:     #7d9670;
+  --accent:    #f0769e;   /* warm blossom — heart & icon pop */
+  --green:     #4fd6a3;   /* mint success */
   --red:       #f06565;
   --gold:      #f3c969;
   --rhodri:    #3b82c4;
@@ -40,10 +40,10 @@ body {
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
   background:
-    radial-gradient(1200px 820px at 12% -12%, rgba(59,130,196,0.22), transparent 58%),
-    radial-gradient(1050px 760px at 112% 6%, rgba(167,139,202,0.18), transparent 55%),
-    radial-gradient(980px 980px at 50% 122%, rgba(224,142,60,0.12), transparent 60%),
-    linear-gradient(180deg, #070b14 0%, #05080f 100%);
+    radial-gradient(1200px 820px at 12% -12%, rgba(122,200,90,0.20), transparent 58%),
+    radial-gradient(1050px 760px at 112% 6%, rgba(159,217,106,0.16), transparent 55%),
+    radial-gradient(980px 980px at 50% 122%, rgba(243,201,105,0.10), transparent 62%),
+    linear-gradient(180deg, #213220 0%, #141f17 100%);
   background-attachment: fixed;
 }
 
@@ -686,7 +686,7 @@ input, select, textarea { font-family: inherit; }
   box-shadow: 0 3px 12px rgba(74,144,217,0.4);
   transition: all 0.15s;
 }
-.btn-save:hover { transform: translateY(-1px); box-shadow: 0 5px 18px rgba(74,144,217,0.6); }
+.btn-save:hover { transform: translateY(-1px); box-shadow: 0 5px 18px rgba(90,166,75,0.55); }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -947,7 +947,7 @@ input, select, textarea { font-family: inherit; }
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 0.66rem; font-weight: 600; border-radius: 99px; padding: 2px 7px;
 }
-.recur-pill { background: rgba(74,144,217,0.18); color: var(--blue-4); }
+.recur-pill { background: rgba(122,200,90,0.20); color: var(--blue-4); }
 .rotate-pill { background: rgba(167,139,202,0.18); color: #c4abe0; }
 .paused-pill { background: rgba(240,168,87,0.18); color: var(--gold); }
 .task-card.paused { opacity: 0.7; }
@@ -1498,3 +1498,7 @@ input[type="number"], textarea, .shop-item-input, .shop-qty-input,
 .pulse-privacy-actions button { display: flex; align-items: center; gap: 5px; font-size: 0.76rem; font-weight: 600; color: var(--ink-2); background: var(--bg-4); border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; }
 .pulse-privacy-actions button:hover { color: var(--ink-1); }
 .pulse-privacy-actions button.danger:hover { color: var(--red); background: rgba(240,101,101,0.12); }
+
+/* ── Multi-assignee ── */
+.who-stack { display: inline-flex; gap: 3px; align-items: center; }
+.form-hint { font-weight: 400; font-size: 11px; color: var(--ink-4); font-style: normal; margin-left: 6px; }

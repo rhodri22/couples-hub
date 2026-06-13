@@ -19,7 +19,7 @@ import {
 } from 'date-fns'
 import {
   PEOPLE, CATEGORIES, EVENT_TYPES, KANBAN_COLS, REMINDER_OPTIONS, RECUR_OPTIONS,
-  getCat, getPerson, getEventType, genId,
+  getCat, getPerson, getEventType, genId, ASSIGNABLE, getAssignees, assigneeIds, primaryPerson, normalizeAssign,
   DEMO_TASKS, DEMO_EVENTS, DEMO_NOTES, DEMO_TEMPLATES, DEMO_SETTINGS,
   MOOD_LEVELS, getMood, DATE_VIBES, DATE_BUDGETS, DATE_TIMES, BADGES, levelTitle,
   DEMO_MOODS, DEMO_REWARDS, DEMO_DATE_IDEAS
@@ -112,7 +112,7 @@ export default function App() {
   // ── Task CRUD ──
   async function saveTask(task) {
     setSyncStatus('syncing')
-    const row = { ...task, household_id: HOUSEHOLD_ID }
+    const row = normalizeAssign({ ...task, household_id: HOUSEHOLD_ID })
     if (supabase) { const { error } = await supabase.from('tasks').upsert(row); if (error) { setSyncStatus('offline'); showError(`Couldn't save task — ${error.message}`); return } }
     setTasks(prev => { const i = prev.findIndex(t => t.id === row.id); if (i >= 0) { const n = [...prev]; n[i] = row; return n } return [row, ...prev] })
     scheduleNotification(row); flash()
@@ -147,7 +147,7 @@ export default function App() {
   // ── Event CRUD ──
   async function saveEvent(ev) {
     setSyncStatus('syncing')
-    const row = { ...ev, household_id: HOUSEHOLD_ID }
+    const row = normalizeAssign({ ...ev, household_id: HOUSEHOLD_ID })
     if (supabase) {
       const { error } = await supabase.from('events').upsert(row)
       if (error) { setSyncStatus('offline'); showError(`Couldn't save event — ${error.message}`); return { ok: false, message: error.message } }
@@ -273,9 +273,9 @@ export default function App() {
   }
 
   const filteredTasks = tasks.filter(t =>
-    (filterPerson === 'all' || t.assigned_to === filterPerson) &&
+    (filterPerson === 'all' || assigneeIds(t).length === 0 || assigneeIds(t).includes(filterPerson)) &&
     (filterCat === 'all' || t.category === filterCat))
-  const filteredEvents = events.filter(e => filterPerson === 'all' || e.assigned_to === filterPerson)
+  const filteredEvents = events.filter(e => filterPerson === 'all' || assigneeIds(e).length === 0 || assigneeIds(e).includes(filterPerson))
   const pendingCount = tasks.filter(t => !t.completed).length
 
   function headerAdd() {
@@ -331,7 +331,7 @@ export default function App() {
           <div className="filter-chips">
             <select value={filterPerson} onChange={e => setFilterPerson(e.target.value)} className="filter-select">
               <option value="all">Everyone</option>
-              {PEOPLE.map(p => <option key={p.id} value={p.id}>{p.icon} {p.label}</option>)}
+              {ASSIGNABLE.map(p => <option key={p.id} value={p.id}>{p.icon} {p.label}</option>)}
             </select>
             {view === 'tasks' && (
               <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="filter-select">
@@ -501,10 +501,16 @@ function KanbanView({ tasks, away, onEdit, onDelete, onToggle, onMove, onSnooze,
 }
 
 // ─── Task card (#1 recur badge, #2 rotation, #7 snooze, #9 subtasks) ──────────
+function AssigneeBadges({ item }) {
+  const people = getAssignees(item)
+  const show = people.length ? people : [getPerson('both')]
+  return <span className="who-stack">{show.map(p => <span key={p.id} className="home-task-who" style={{ background: p.color }} title={p.label}>{p.icon}</span>)}</span>
+}
+
 function TaskCard({ task, away, onEdit, onDelete, onToggle, onMove, onSnooze, onSubtask }) {
   const [showSnooze, setShowSnooze] = useState(false)
   const cat = getCat(task.category)
-  const person = getPerson(task.assigned_to)
+  const person = primaryPerson(task)
   const overdue = task.due_date && isBefore(parseISO(task.due_date), startOfDay(new Date())) && !task.completed
   const paused = isPaused(task, away)
   const subs = task.subtasks || []
@@ -519,7 +525,7 @@ function TaskCard({ task, away, onEdit, onDelete, onToggle, onMove, onSnooze, on
           <span className="card-title">{task.title}</span>
         </div>
         <div className="card-meta">
-          <span className="person-pill" style={{ background: person.color, color: '#fff' }}>{person.icon} {person.label}</span>
+          {(getAssignees(task).length ? getAssignees(task) : [getPerson('both')]).map(pp => <span key={pp.id} className="person-pill" style={{ background: pp.color, color: '#fff' }}>{pp.icon} {pp.label}</span>)}
           <span className="cat-pill" style={{ background: cat.color + '22', color: cat.color }}>{cat.label}</span>
           {task.recur && task.recur !== 'none' && <span className="recur-pill"><Repeat size={9} /> {task.recur}</span>}
           {task.rotation && <span className="rotate-pill"><Users size={9} /> rotates</span>}
@@ -574,7 +580,7 @@ function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask
         <div key={k} className="list-group">
           <div className="list-date-header">{k === 'No date' ? 'No due date' : format(parseISO(k), 'EEEE, d MMMM')}{k !== 'No date' && isToday(parseISO(k)) && <span className="today-badge">Today</span>}</div>
           {group.map(task => {
-            const cat = getCat(task.category), person = getPerson(task.assigned_to)
+            const cat = getCat(task.category), person = primaryPerson(task)
             const overdue = task.due_date && isBefore(parseISO(task.due_date), startOfDay(new Date())) && !task.completed
             const paused = isPaused(task, away)
             const subs = task.subtasks || []
@@ -584,7 +590,7 @@ function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask
                 <div className="list-content">
                   <span className="list-title">{task.title}</span>
                   <div className="list-meta">
-                    <span className="person-pill" style={{ background: person.color, color: '#fff' }}>{person.icon} {person.label}</span>
+                    {(getAssignees(task).length ? getAssignees(task) : [getPerson('both')]).map(pp => <span key={pp.id} className="person-pill" style={{ background: pp.color, color: '#fff' }}>{pp.icon} {pp.label}</span>)}
                     <span className="cat-pill" style={{ background: cat.color + '22', color: cat.color }}>{cat.label}</span>
                     {task.recur && task.recur !== 'none' && <span className="recur-pill"><Repeat size={9} /> {task.recur}</span>}
                     {subs.length > 0 && <span className="due-pill">{subs.filter(s => s.done).length}/{subs.length} steps</span>}
@@ -608,7 +614,7 @@ function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask
 
 // ─── Calendar (events + multi-day bars) ───────────────────────────────────────
 function CalEventRow({ e, onEdit, onQuickDelete, onAddToCalendar, showDate }) {
-  const t = getEventType(e.event_type), p = getPerson(e.assigned_to)
+  const t = getEventType(e.event_type), p = primaryPerson(e)
   const multi = e.end_date && e.end_date !== e.start_date
   async function del(ev) {
     ev.stopPropagation()
@@ -621,7 +627,7 @@ function CalEventRow({ e, onEdit, onQuickDelete, onAddToCalendar, showDate }) {
       <div className="cal-event-info">
         <span className="cal-event-title">{e.title}</span>
         <span className="cal-event-sub">
-          {p.icon} {p.label}
+          {(getAssignees(e).map(x => x.icon + ' ' + x.label).join(', ')) || '👨‍👩‍🦮 Everyone'}
           {showDate && ` · ${format(parseISO(e.start_date), 'd MMM')}`}
           {multi && ` – ${format(parseISO(e.end_date), 'd MMM')}`}
           {!e.all_day && e.start_time && ` · ${e.start_time}`}
@@ -673,18 +679,18 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
               <span className="cal-day-num">{format(day, 'd')}</span>
               <div className="cal-bars">
                 {evs.slice(0, 3).map(e => {
-                  const t = getEventType(e.event_type), p = getPerson(e.assigned_to)
+                  const t = getEventType(e.event_type), p = primaryPerson(e)
                   const isStart = isSameDay(day, parseISO(e.start_date))
                   const multi = e.end_date && e.end_date !== e.start_date
                   return <div key={e.id} className={`cal-bar ${multi ? 'multi' : ''}`} style={{ background: p.color }} title={e.title}>{(isStart || day.getDay() === 0) && <span className="cal-bar-label">{t.icon} {e.title}</span>}</div>
                 })}
-                {tks.length > 0 && <div className="cal-task-dots">{tks.slice(0, 4).map(t => <span key={t.id} className="cal-tdot" style={{ background: getPerson(t.assigned_to).color }} />)}</div>}
+                {tks.length > 0 && <div className="cal-task-dots">{tks.slice(0, 4).map(t => <span key={t.id} className="cal-tdot" style={{ background: primaryPerson(t).color }} />)}</div>}
               </div>
             </div>
           )
         })}
       </div>
-      <div className="cal-legend">{PEOPLE.map(p => <span key={p.id} className="legend-item"><span className="legend-dot" style={{ background: p.color }} />{p.label}</span>)}</div>
+      <div className="cal-legend">{ASSIGNABLE.map(p => <span key={p.id} className="legend-item"><span className="legend-dot" style={{ background: p.color }} />{p.label}</span>)}</div>
 
       {selectedDay && (
         <div className="cal-day-panel">
@@ -692,8 +698,8 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
           {selEvents.length === 0 && selTasks.length === 0 && <div className="cal-empty">Nothing scheduled — tap "Add event" to create one.</div>}
           {selEvents.map(e => <CalEventRow key={e.id} e={e} onEdit={onEditEvent} onQuickDelete={onQuickDelete} onAddToCalendar={onAddToCalendar} />)}
           {selTasks.map(t => {
-            const person = getPerson(t.assigned_to)
-            return <div key={t.id} className="cal-event-row task" style={{ borderLeft: `4px solid ${person.color}` }}><span className="cal-event-icon">📋</span><div className="cal-event-info"><span className="cal-event-title">{t.title}</span><span className="cal-event-sub">Task · {person.icon} {person.label}</span></div></div>
+            const person = primaryPerson(t)
+            return <div key={t.id} className="cal-event-row task" style={{ borderLeft: `4px solid ${person.color}` }}><span className="cal-event-icon">📋</span><div className="cal-event-info"><span className="cal-event-title">{t.title}</span><span className="cal-event-sub">Task · {(getAssignees(t).map(x => x.icon + ' ' + x.label).join(', ')) || '👨‍👩‍🦮 Everyone'}</span></div></div>
           })}
         </div>
       )}
@@ -742,7 +748,7 @@ function NotesView({ notes, events, tasks, onSave, onDelete }) {
           <div className="countdown-grid">
             {countdowns.map(e => {
               const days = differenceInCalendarDays(parseISO(e.start_date), todayStart)
-              const t = getEventType(e.event_type), p = getPerson(e.assigned_to)
+              const t = getEventType(e.event_type), p = primaryPerson(e)
               return <div key={e.id} className="countdown-card" style={{ borderTop: `3px solid ${p.color}` }}><span className="cd-icon">{t.icon}</span><span className="cd-days">{days === 0 ? 'Today' : days}</span>{days > 0 && <span className="cd-unit">day{days > 1 ? 's' : ''}</span>}<span className="cd-title">{e.title}</span></div>
             })}
           </div>
@@ -772,7 +778,7 @@ function TaskModal({ task, away, onSave, onClose }) {
   const isNew = !task?.id
   const [f, setF] = useState({
     id: task?.id || genId(), title: task?.title || '', category: task?.category || 'home',
-    assigned_to: task?.assigned_to || 'both', status: task?.status || 'todo',
+    assignees: assigneeIds(task), status: task?.status || 'todo',
     due_date: task?.due_date || '', reminder_minutes: task?.reminder_minutes ?? 1440,
     completed: task?.completed || false, recur: task?.recur || 'none',
     completed_at: task?.completed_at || null, snoozed_until: task?.snoozed_until || null,
@@ -797,8 +803,8 @@ function TaskModal({ task, away, onSave, onClose }) {
         <div className="modal-form">
           <label>Title<input value={f.title} onChange={e => set('title', e.target.value)} placeholder="What needs doing?" autoFocus /></label>
 
-          <div className="form-row"><span className="form-label">Assign to</span>
-            <div className="person-grid">{PEOPLE.map(p => <button key={p.id} type="button" className={`person-btn ${f.assigned_to === p.id ? 'active' : ''}`} style={{ '--pc': p.color }} onClick={() => set('assigned_to', p.id)}>{p.icon} {p.label}{away.includes(p.id) && ' ✈️'}</button>)}</div>
+          <div className="form-row"><span className="form-label">Assign to <em className="form-hint">tap one or more</em></span>
+            <div className="person-grid">{ASSIGNABLE.map(p => { const on = (f.assignees || []).includes(p.id); return <button key={p.id} type="button" className={`person-btn ${on ? 'active' : ''}`} style={{ '--pc': p.color }} onClick={() => set('assignees', on ? f.assignees.filter(x => x !== p.id) : [...(f.assignees || []), p.id])}>{p.icon} {p.label}{away.includes(p.id) && ' ✈️'}{on && ' ✓'}</button> })}</div>
           </div>
 
           <div className="form-row"><span className="form-label">Category</span>
@@ -844,7 +850,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
   const isNew = !event?.id
   const [f, setF] = useState({
     id: event?.id || genId(), title: event?.title || '', event_type: event?.event_type || 'other',
-    assigned_to: event?.assigned_to || 'both', start_date: event?.start_date || format(new Date(), 'yyyy-MM-dd'),
+    assignees: assigneeIds(event), start_date: event?.start_date || format(new Date(), 'yyyy-MM-dd'),
     end_date: event?.end_date || event?.start_date || format(new Date(), 'yyyy-MM-dd'),
     all_day: event?.all_day ?? true, start_time: event?.start_time || '', recur: event?.recur || 'none',
     reminder_minutes: event?.reminder_minutes ?? 1440, notes: event?.notes || '', created_at: event?.created_at || new Date().toISOString(),
@@ -877,7 +883,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
         <div className="modal-form">
           <label>Event<input value={f.title} onChange={e => set('title', e.target.value)} placeholder="e.g. Rhodri's Birthday, Holiday in India" autoFocus /></label>
           <div className="form-row"><span className="form-label">Type</span><div className="cat-grid">{EVENT_TYPES.map(t => <button key={t.id} type="button" className={`cat-btn ${f.event_type === t.id ? 'active' : ''}`} style={{ '--cat-color': t.color }} onClick={() => set('event_type', t.id)}>{t.icon} {t.label}</button>)}</div></div>
-          <div className="form-row"><span className="form-label">For</span><div className="person-grid">{PEOPLE.map(p => <button key={p.id} type="button" className={`person-btn ${f.assigned_to === p.id ? 'active' : ''}`} style={{ '--pc': p.color }} onClick={() => set('assigned_to', p.id)}>{p.icon} {p.label}</button>)}</div></div>
+          <div className="form-row"><span className="form-label">For <em className="form-hint">tap one or more</em></span><div className="person-grid">{ASSIGNABLE.map(p => { const on = (f.assignees || []).includes(p.id); return <button key={p.id} type="button" className={`person-btn ${on ? 'active' : ''}`} style={{ '--pc': p.color }} onClick={() => set('assignees', on ? f.assignees.filter(x => x !== p.id) : [...(f.assignees || []), p.id])}>{p.icon} {p.label}{on && ' ✓'}</button> })}</div></div>
           <div className="form-row two-col">
             <label>Start date<input type="date" value={f.start_date} onChange={e => { set('start_date', e.target.value); if (isBefore(parseISO(f.end_date), parseISO(e.target.value))) set('end_date', e.target.value) }} /></label>
             <label>End date<input type="date" value={f.end_date} min={f.start_date} onChange={e => set('end_date', e.target.value)} /></label>
@@ -1489,7 +1495,7 @@ function HomeView({ whoami, tasks, events, away, onQuickAdd, onTemplates, onTogg
 
   const Chip = ({ item }) => {
     const isEvent = !!item.event_type
-    const p = getPerson(item.assigned_to)
+    const p = primaryPerson(item)
     const icon = isEvent ? getEventType(item.event_type).icon : getCat(item.category).icon || '📋'
     return (
       <button className="hi-chip" style={{ '--cc': p.color }} onClick={() => isEvent ? onEditEvent(item) : onEditTask(item)} title={`${item.title} · ${p.label}`}>
@@ -1525,7 +1531,7 @@ function HomeView({ whoami, tasks, events, away, onQuickAdd, onTemplates, onTogg
               <div key={t.id} className="home-task-row overdue" onClick={() => onEditTask(t)}>
                 <button className="check-btn" onClick={e => { e.stopPropagation(); onToggle(t) }} />
                 <span className="home-task-title">{t.title}</span>
-                <span className="home-task-who" style={{ background: getPerson(t.assigned_to).color }}>{getPerson(t.assigned_to).icon}</span>
+                <AssigneeBadges item={t} />
               </div>
             ))}
           </div>
@@ -1536,12 +1542,12 @@ function HomeView({ whoami, tasks, events, away, onQuickAdd, onTemplates, onTogg
         )}
 
         {todayEvents.map(e => {
-          const p = getPerson(e.assigned_to), t = getEventType(e.event_type)
+          const p = primaryPerson(e), t = getEventType(e.event_type)
           return (
             <div key={e.id} className="home-event-row" onClick={() => onEditEvent(e)} style={{ borderLeft: `3px solid ${p.color}` }}>
               <span className="home-event-icon">{t.icon}</span>
               <span className="home-task-title">{e.title}</span>
-              <span className="home-task-sub">{!e.all_day && e.start_time ? e.start_time : 'all day'} · {p.label}</span>
+              <span className="home-task-sub">{!e.all_day && e.start_time ? e.start_time : 'all day'} · {(getAssignees(e).map(x => x.label).join(', ')) || 'Everyone'}</span>
             </div>
           )
         })}
@@ -1549,7 +1555,7 @@ function HomeView({ whoami, tasks, events, away, onQuickAdd, onTemplates, onTogg
           <div key={t.id} className="home-task-row" onClick={() => onEditTask(t)}>
             <button className={`check-btn ${t.completed ? 'checked' : ''}`} onClick={e => { e.stopPropagation(); onToggle(t) }}>{t.completed && <Check size={12} />}</button>
             <span className="home-task-title">{t.title}</span>
-            <span className="home-task-who" style={{ background: getPerson(t.assigned_to).color }}>{getPerson(t.assigned_to).icon}</span>
+            <AssigneeBadges item={t} />
           </div>
         ))}
       </section>

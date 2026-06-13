@@ -12,8 +12,8 @@ export default defineConfig({
         name: "Couple's Hub",
         short_name: "Couple's Hub",
         description: "Shared to-do list and calendar for couples",
-        theme_color: '#1e3a5f',
-        background_color: '#0f1f35',
+        theme_color: '#213220',
+        background_color: '#141f17',
         display: 'standalone',
         orientation: 'portrait',
         icons: [
