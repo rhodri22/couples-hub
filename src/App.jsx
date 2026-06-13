@@ -121,6 +121,7 @@ export default function App() {
   async function saveTask(task) {
     setSyncStatus('syncing')
     const row = normalizeAssign({ ...task, household_id: HOUSEHOLD_ID })
+    if (!row.due_date) row.due_date = format(addDays(new Date(), 7), 'yyyy-MM-dd')
     if (supabase) {
       const r = await resilientUpsert('tasks', row)
       if (!r.ok) { setSyncStatus('offline'); showError(`Couldn't save task — ${r.message}`); return }

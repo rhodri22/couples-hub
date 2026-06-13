@@ -59,7 +59,11 @@ export const getCat       = id => CATEGORIES.find(c => c.id === id) || CATEGORIE
 export const getPerson    = id => PEOPLE.find(p => p.id === id) || PEOPLE[3]
 export const ASSIGNABLE = PEOPLE.filter(p => p.id !== 'both')
 export const getAssignees = item => {
-  let ids = Array.isArray(item?.assignees) && item.assignees.length ? item.assignees : (item?.assigned_to ? [item.assigned_to] : [])
+  let ids = []
+  if (Array.isArray(item?.assignees) && item.assignees.length) ids = item.assignees
+  else if (Array.isArray(item?.assigned_to)) ids = item.assigned_to
+  else if (typeof item?.assigned_to === 'string' && item.assigned_to) ids = item.assigned_to.split(',')
+  ids = ids.map(s => (s || '').trim())
   if (ids.includes('both')) ids = ['rhodri', 'becky', 'lana']
   ids = [...new Set(ids)].filter(id => ['rhodri', 'becky', 'lana'].includes(id))
   return ids.map(id => PEOPLE.find(p => p.id === id)).filter(Boolean)
@@ -68,8 +72,9 @@ export const assigneeIds = item => getAssignees(item).map(p => p.id)
 export const primaryPerson = item => getAssignees(item)[0] || getPerson('both')
 export const normalizeAssign = row => {
   const ids = assigneeIds(row)
-  const assigned_to = ids.length === 3 ? 'both' : (ids.length === 1 ? ids[0] : (ids[0] || 'both'))
-  return { ...row, assignees: ids, assigned_to }
+  const out = { ...row, assigned_to: ids.join(',') }
+  delete out.assignees   // multi-assignee now lives in the existing assigned_to column — no migration needed
+  return out
 }
 export const getEventType = id => EVENT_TYPES.find(e => e.id === id) || EVENT_TYPES[5]
 
