@@ -142,3 +142,34 @@ end $$;
 
 -- Refresh PostgREST's schema cache so new tables are visible immediately
 notify pgrst, 'reload schema';
+-- ════════════════════════════════════════════════════════════════════════
+-- Couple's Hub — Expenses table (one-time setup)
+-- Run ONCE in Supabase → SQL Editor before using the Expenses tab.
+-- Safe to re-run.
+-- ════════════════════════════════════════════════════════════════════════
+create table if not exists expenses (
+  id           uuid primary key default gen_random_uuid(),
+  household_id text not null,
+  title        text not null,
+  amount       numeric not null default 0,
+  paid_by      text not null default 'rhodri',   -- 'rhodri' | 'becky'
+  split        text not null default 'even',      -- 'even' | 'rhodri' | 'becky'
+  settled      boolean not null default false,
+  settled_at   timestamptz,
+  created_at   timestamptz not null default now()
+);
+
+alter table expenses add column if not exists category    text;
+alter table expenses add column if not exists date         date;
+alter table expenses add column if not exists note         text;
+alter table expenses add column if not exists split_value  numeric;
+
+alter table expenses enable row level security;
+drop policy if exists "allow all expenses" on expenses;
+create policy "allow all expenses" on expenses for all using (true) with check (true);
+
+do $$ begin
+  alter publication supabase_realtime add table expenses;
+exception when duplicate_object then null; end $$;
+
+notify pgrst, 'reload schema';

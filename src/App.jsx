@@ -3,9 +3,9 @@ import {
   Plus, X, Check, List, Columns, Bell, BellOff, ChevronLeft, ChevronRight, Palette,
   RefreshCw, AlertCircle, Pencil, Trash2, Clock, Heart, CalendarDays, StickyNote,
   CalendarHeart, AlarmClock, Flame, Trophy, Plane, LayoutTemplate,
-  Sparkles, Repeat, Users, MoreHorizontal, CalendarPlus,
+  Sparkles, Repeat, Users, MoreHorizontal, CalendarPlus, Wallet,
   Wand2, Award, Star, Gift, HeartPulse, Wine, Crown, Lock, Send, Loader2,
-  TrendingUp, Gem, Mail, Download
+  TrendingUp, Gem, Mail, Download, Copy
 } from 'lucide-react'
 import { supabase, HOUSEHOLD_ID } from './supabase'
 import {
@@ -40,6 +40,7 @@ export default function App() {
   const [moods, setMoods]       = useState(DEMO_MOODS)
   const [rewards, setRewards]   = useState(DEMO_REWARDS)
   const [dateIdeas, setDateIdeas] = useState(DEMO_DATE_IDEAS)
+  const [expenses, setExpenses] = useState([])
   const [view, setView]         = useState('home')
   const [taskLayout, setTaskLayout] = useState('list')
   const [whoami, setWhoami]     = useState(() => { try { return localStorage.getItem('hub-whoami') || '' } catch { return '' } })
@@ -82,11 +83,12 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'moods',      filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadMoods)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rewards',    filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadRewards)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'date_ideas', filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadDateIdeas)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses',  filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadExpenses)
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [])
 
-  async function loadAll() { await Promise.all([loadTasks(), loadEvents(), loadNotes(), loadTemplates(), loadSettings(), loadMoods(), loadRewards(), loadDateIdeas()]) }
+  async function loadAll() { await Promise.all([loadTasks(), loadEvents(), loadNotes(), loadTemplates(), loadSettings(), loadMoods(), loadRewards(), loadDateIdeas(), loadExpenses()]) }
   function flash() { setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 1400) }
   function chooseWhoami(id) { setWhoami(id); try { localStorage.setItem('hub-whoami', id) } catch {} }
   function finishWelcome() { setShowWelcome(false); try { localStorage.setItem('hub-welcomed', '1') } catch {} }
@@ -116,6 +118,7 @@ export default function App() {
   async function loadMoods()     { if (!supabase) return; const { data, error } = await supabase.from('moods').select('*').eq('household_id', HOUSEHOLD_ID).order('created_at', { ascending: false }); if (!error) { setMoods(data); flash() } }
   async function loadRewards()   { if (!supabase) return; const { data, error } = await supabase.from('rewards').select('*').eq('household_id', HOUSEHOLD_ID).order('created_at', { ascending: false }); if (!error) { setRewards(data); flash() } }
   async function loadDateIdeas() { if (!supabase) return; const { data, error } = await supabase.from('date_ideas').select('*').eq('household_id', HOUSEHOLD_ID).order('created_at', { ascending: false }); if (!error) { setDateIdeas(data); flash() } }
+  async function loadExpenses()  { if (!supabase) return; const { data, error } = await supabase.from('expenses').select('*').eq('household_id', HOUSEHOLD_ID).order('created_at', { ascending: false }); if (!error) { setExpenses(data); flash() } }
 
   // ── Task CRUD ──
   async function saveTask(task) {
@@ -135,6 +138,18 @@ export default function App() {
     if (supabase) { const { error } = await supabase.from('tasks').delete().eq('id', id); if (error) { showError(`Couldn't delete task — ${error.message}`); return } }
     setTasks(prev => prev.filter(t => t.id !== id))
   }
+  async function saveExpense(exp) {
+    const row = { ...exp, household_id: HOUSEHOLD_ID }
+    if (supabase) { const r = await resilientUpsert('expenses', row); if (!r.ok) { showError(`Couldn't save expense — ${r.message}`); return } }
+    setExpenses(prev => { const i = prev.findIndex(e => e.id === row.id); if (i >= 0) { const n = [...prev]; n[i] = row; return n } return [row, ...prev] })
+    flash()
+  }
+  async function toggleSettle(exp) { await saveExpense({ ...exp, settled: !exp.settled, settled_at: !exp.settled ? new Date().toISOString() : null }) }
+  async function deleteExpense(id) {
+    if (supabase) { const { error } = await supabase.from('expenses').delete().eq('id', id); if (error) { showError(`Couldn't delete expense — ${error.message}`); return } }
+    setExpenses(prev => prev.filter(e => e.id !== id))
+  }
+  async function settleAll() { for (const e of expenses.filter(x => !x.settled)) await saveExpense({ ...e, settled: true, settled_at: new Date().toISOString() }) }
   async function toggleComplete(task) {
     const nowDone = !task.completed
     const updated = { ...task, completed: nowDone, status: nowDone ? 'done' : 'todo', completed_at: nowDone ? new Date().toISOString() : null }
@@ -143,6 +158,14 @@ export default function App() {
     if (nowDone && task.recur && task.recur !== 'none') {
       const next = buildNextInstance(task, away)
       if (next) await saveTask(next)
+    }
+  }
+  async function setTaskStatus(task, status) {
+    const completed = status === 'done'
+    const wasDone = task.completed
+    await saveTask({ ...task, status, completed, completed_at: completed ? (task.completed_at || new Date().toISOString()) : null })
+    if (completed && !wasDone && task.recur && task.recur !== 'none') {
+      const next = buildNextInstance(task, away); if (next) await saveTask(next)
     }
   }
   async function moveKanban(task, status) { await saveTask({ ...task, status, completed: status === 'done', completed_at: status === 'done' ? new Date().toISOString() : null }) }
@@ -351,6 +374,7 @@ export default function App() {
           <button className={view === 'home' ? 'active' : ''}     onClick={() => setView('home')}><Heart size={15} />Today</button>
           <button className={view === 'tasks' ? 'active' : ''}    onClick={() => setView('tasks')}><Check size={15} />Tasks</button>
           <button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}><CalendarDays size={15} />Calendar</button>
+          <button className={view === 'expenses' ? 'active' : ''} onClick={() => setView('expenses')}><Wallet size={15} />Expenses</button>
           <button className={view === 'us' || view === 'notes' ? 'active' : ''} onClick={() => setMoreSheet(true)}><MoreHorizontal size={15} />More</button>
         </div>
         {(view === 'tasks' || view === 'calendar') && (
@@ -386,7 +410,7 @@ export default function App() {
             <QuickAdd onAdd={quickAdd} onTemplates={() => setTplModal(true)} />
             {taskLayout === 'board'
               ? <KanbanView tasks={filteredTasks} away={away} onEdit={setTaskModal} onDelete={deleteTask} onToggle={toggleComplete} onMove={moveKanban} onSnooze={snooze} onSubtask={toggleSubtask} />
-              : <ListView   tasks={filteredTasks} away={away} onEdit={setTaskModal} onDelete={deleteTask} onToggle={toggleComplete} onSnooze={snooze} onSubtask={toggleSubtask} />}
+              : <ListView   tasks={filteredTasks} away={away} onEdit={setTaskModal} onDelete={deleteTask} onToggle={toggleComplete} onSnooze={snooze} onSubtask={toggleSubtask} onSetStatus={setTaskStatus} />}
           </>
         )}
         {view === 'calendar' && <CalendarView events={filteredEvents} tasks={filteredTasks} month={calMonth} setMonth={setCalMonth} onEditEvent={setEventModal} onAddOnDate={d => setEventModal({ start_date: format(d, 'yyyy-MM-dd'), end_date: format(d, 'yyyy-MM-dd') })} onQuickDelete={deleteEvent} onAddToCalendar={addEventToCalendar} />}
@@ -395,6 +419,7 @@ export default function App() {
                                   onSaveDateIdea={saveDateIdea} onToggleDate={toggleDateDone} onDeleteDate={deleteDateIdea} onDateToCalendar={dateToCalendar}
                                   callAI={callAI} />}
         {view === 'notes'    && <NotesView notes={notes} events={events} tasks={tasks} onSave={saveNote} onDelete={deleteNote} />}
+        {view === 'expenses' && <ExpensesView expenses={expenses} onSave={saveExpense} onToggleSettle={toggleSettle} onDelete={deleteExpense} onSettleAll={settleAll} />}
       </main>
 
       {taskModal !== null && <TaskModal task={taskModal} away={away} onSave={async t => { await saveTask(t); setTaskModal(null) }} onClose={() => setTaskModal(null)} />}
@@ -544,6 +569,20 @@ async function resilientUpsert(table, row) {
   return { ok: false, message: 'Could not save after several attempts.' }
 }
 
+function eventOccursOn(e, day) {
+  const s = startOfDay(parseISO(e.start_date))
+  const en = startOfDay(parseISO(e.end_date || e.start_date))
+  if (isWithinInterval(day, { start: s, end: en }) || isSameDay(day, s)) return true
+  const r = e.recur
+  if (!r || r === 'none' || isBefore(startOfDay(day), s)) return false
+  const D = startOfDay(day)
+  if (r === 'daily') return true
+  if (r === 'weekly') return D.getDay() === s.getDay()
+  if (r === 'monthly') return D.getDate() === s.getDate()
+  if (r === 'yearly') return D.getDate() === s.getDate() && D.getMonth() === s.getMonth()
+  return false
+}
+
 function AssigneeBadges({ item }) {
   const people = getAssignees(item)
   const show = people.length ? people : [getPerson('both')]
@@ -613,7 +652,7 @@ function TaskCard({ task, away, onEdit, onDelete, onToggle, onMove, onSnooze, on
 }
 
 // ─── List view ────────────────────────────────────────────────────────────────
-function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask }) {
+function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask, onSetStatus }) {
   const sorted = [...tasks].sort((a, b) => (!a.due_date ? 1 : !b.due_date ? -1 : new Date(a.due_date) - new Date(b.due_date)))
   const groups = {}
   sorted.forEach(t => { const k = t.due_date ? format(parseISO(t.due_date), 'yyyy-MM-dd') : 'No date'; (groups[k] ||= []).push(t) })
@@ -638,6 +677,9 @@ function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask
                     {task.recur && task.recur !== 'none' && <span className="recur-pill"><Repeat size={9} /> {task.recur}</span>}
                     {subs.length > 0 && <span className="due-pill">{subs.filter(s => s.done).length}/{subs.length} steps</span>}
                     {paused && <span className="paused-pill"><Plane size={9} /> paused</span>}
+                  </div>
+                  <div className="status-seg">
+                    {KANBAN_COLS.map(col => <button key={col.id} type="button" className={`status-seg-btn ${task.status === col.id ? 'on' : ''}`} style={task.status === col.id ? { '--sc': col.color } : undefined} onClick={() => onSetStatus(task, col.id)}>{col.label}</button>)}
                   </div>
                 </div>
                 <div className="list-btns">
@@ -691,7 +733,7 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
   const monthStart = startOfMonth(month), monthEnd = endOfMonth(month)
   const days = eachDayOfInterval({ start: monthStart, end: monthEnd })
   const startPad = monthStart.getDay()
-  const eventsOnDay = day => events.filter(e => { const s = parseISO(e.start_date), en = parseISO(e.end_date || e.start_date); return isWithinInterval(day, { start: startOfDay(s), end: startOfDay(en) }) || isSameDay(day, s) })
+  const eventsOnDay = day => events.filter(e => eventOccursOn(e, day))
   const tasksOnDay = day => tasks.filter(t => t.due_date && isSameDay(parseISO(t.due_date), day))
   const selEvents = selectedDay ? eventsOnDay(selectedDay) : []
   const selTasks = selectedDay ? tasksOnDay(selectedDay) : []
@@ -1724,6 +1766,168 @@ function WelcomeModal({ whoami, onChoose, onClearSample, onClose, demo }) {
             <button className="btn-save" onClick={onClose}><Check size={15} /> {whoami ? "Let's go" : 'Continue'}</button>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+
+function fmtEur(n) { return '\u20AC' + (Number(n) || 0).toFixed(2) }
+
+const EXPENSE_CATS = [
+  { id: 'food',      label: 'Food & drink', icon: '🍽️', color: '#e0734f' },
+  { id: 'groceries', label: 'Groceries',    icon: '🛒', color: '#4caf72' },
+  { id: 'home',      label: 'Home & rent',  icon: '🏠', color: '#3b82c4' },
+  { id: 'travel',    label: 'Travel',       icon: '✈️', color: '#9b6be0' },
+  { id: 'transport', label: 'Transport',    icon: '🚆', color: '#7ec8e3' },
+  { id: 'fun',       label: 'Fun & social', icon: '🎉', color: '#e06b9a' },
+  { id: 'health',    label: 'Health',       icon: '💊', color: '#50c878' },
+  { id: 'shopping',  label: 'Shopping',     icon: '🛍️', color: '#d99a2e' },
+  { id: 'other',     label: 'Other',        icon: '📌', color: '#94a585' },
+]
+const getExpCat = id => EXPENSE_CATS.find(c => c.id === id) || EXPENSE_CATS[8]
+function expShares(e) {
+  if (e.split === 'rhodri') return { r: 1, b: 0 }
+  if (e.split === 'becky')  return { r: 0, b: 1 }
+  if (e.split === 'custom') { const rv = Math.min(100, Math.max(0, Number(e.split_value ?? 50))) / 100; return { r: rv, b: 1 - rv } }
+  return { r: 0.5, b: 0.5 }
+}
+
+function ExpensesView({ expenses, onSave, onToggleSettle, onDelete, onSettleAll }) {
+  const r = getPerson('rhodri'), bk = getPerson('becky')
+  const blank = { title: '', amount: '', paid_by: 'rhodri', split: 'even', split_value: 50, category: 'other', date: format(new Date(), 'yyyy-MM-dd'), note: '' }
+  const [editing, setEditing] = useState(null)
+  const [filter, setFilter] = useState('open')
+  const [catFilter, setCatFilter] = useState('all')
+
+  const sorted = [...expenses].sort((a, z) => (z.date || z.created_at || '').localeCompare(a.date || a.created_at || ''))
+  const openExp = sorted.filter(e => !e.settled)
+  const visible = sorted
+    .filter(e => filter === 'all' ? true : filter === 'open' ? !e.settled : e.settled)
+    .filter(e => catFilter === 'all' ? true : (e.category || 'other') === catFilter)
+
+  const otherShareOf = e => { const a = Number(e.amount) || 0, sh = expShares(e); return e.paid_by === 'rhodri' ? a * sh.b : a * sh.r }
+  let net = 0
+  for (const e of openExp) net += e.paid_by === 'rhodri' ? otherShareOf(e) : -otherShareOf(e)
+  const level = Math.abs(net) < 0.005
+  const debtor = net > 0 ? bk : r, creditor = net > 0 ? r : bk
+
+  const owesLine = e => {
+    const payer = getPerson(e.paid_by), other = getPerson(e.paid_by === 'rhodri' ? 'becky' : 'rhodri')
+    const os = otherShareOf(e)
+    if (os < 0.005) return `${payer.label}'s own expense`
+    return `${other.label} owes ${payer.label} ${fmtEur(os)}`
+  }
+
+  const ym = format(new Date(), 'yyyy-MM')
+  const allAmt = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+  const monthAmt = expenses.filter(e => (e.date || e.created_at || '').slice(0, 7) === ym).reduce((s, e) => s + (Number(e.amount) || 0), 0)
+  const paidR = expenses.filter(e => e.paid_by === 'rhodri').reduce((s, e) => s + (Number(e.amount) || 0), 0)
+  const paidB = expenses.filter(e => e.paid_by === 'becky').reduce((s, e) => s + (Number(e.amount) || 0), 0)
+  const byCat = EXPENSE_CATS.map(c => ({ ...c, total: expenses.filter(e => (e.category || 'other') === c.id).reduce((s, e) => s + (Number(e.amount) || 0), 0) })).filter(c => c.total > 0).sort((a, z) => z.total - a.total)
+  const maxCat = byCat[0]?.total || 1
+
+  const f = editing || blank
+  const setF = patch => setEditing(prev => ({ ...(prev || blank), ...patch }))
+  const openEdit = e => setEditing({ ...blank, ...e, amount: String(e.amount ?? ''), date: e.date || blank.date, split_value: e.split_value ?? 50, note: e.note || '' })
+  const duplicate = e => setEditing({ ...blank, ...e, id: undefined, settled: false, settled_at: null, created_at: undefined, amount: String(e.amount ?? ''), date: blank.date, split_value: e.split_value ?? 50, note: e.note || '' })
+  const submit = () => {
+    const amt = parseFloat(String(f.amount).replace(',', '.'))
+    if (!f.title.trim() || !(amt > 0)) return
+    onSave({
+      id: f.id || genId(), title: f.title.trim(), amount: amt, paid_by: f.paid_by,
+      split: f.split, split_value: f.split === 'custom' ? (Number(f.split_value) || 50) : null,
+      category: f.category || 'other', date: f.date || blank.date, note: (f.note || '').trim() || null,
+      settled: f.settled || false, settled_at: f.settled_at || null, created_at: f.created_at || new Date().toISOString(),
+    })
+    setEditing(null)
+  }
+
+  const Row = ({ e }) => {
+    const c = getExpCat(e.category)
+    return (
+      <div className={`expense-row ${e.settled ? 'settled' : ''}`}>
+        <button className={`check-btn ${e.settled ? 'checked' : ''}`} title={e.settled ? 'Mark unsettled' : 'Mark settled'} onClick={() => onToggleSettle(e)}>{e.settled && <Check size={12} />}</button>
+        <span className="expense-cat-ic" style={{ background: c.color + '22' }} title={c.label}>{c.icon}</span>
+        <div className="expense-main" onClick={() => openEdit(e)}>
+          <div className="expense-top"><span className="expense-title">{e.title}</span><span className="expense-amt">{fmtEur(e.amount)}</span></div>
+          <div className="expense-sub">{getPerson(e.paid_by).icon} {getPerson(e.paid_by).label} paid{e.date ? ` · ${format(parseISO(e.date), 'd MMM')}` : ''} · {e.settled ? 'settled' : owesLine(e)}</div>
+          {e.note && <div className="expense-note">{e.note}</div>}
+        </div>
+        <div className="expense-row-btns">
+          <button onClick={() => duplicate(e)} title="Duplicate (e.g. next month)"><Copy size={13} /></button>
+          <button className="del-btn" onClick={() => onDelete(e.id)}><Trash2 size={13} /></button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="expenses-view">
+      <div className={`balance-card ${level ? 'level' : ''}`}>
+        {level ? <div className="balance-main">All settled up 🎉</div> : (<>
+          <div className="balance-main"><span style={{ color: debtor.color }}>{debtor.icon} {debtor.label}</span> owes <span style={{ color: creditor.color }}>{creditor.icon} {creditor.label}</span></div>
+          <div className="balance-amount">{fmtEur(Math.abs(net))}</div>
+        </>)}
+        {openExp.length > 0 && <button className="settle-all-btn" onClick={onSettleAll}>{level ? 'Clear settled list' : `Settle up — ${fmtEur(Math.abs(net))}`}</button>}
+      </div>
+
+      {editing ? (
+        <div className="expense-form">
+          <input type="text" placeholder="What was it? e.g. Flights to India" value={f.title} onChange={e => setF({ title: e.target.value })} />
+          <div className="exp-form-grid">
+            <input type="text" inputMode="decimal" placeholder="Amount €" value={f.amount} onChange={e => setF({ amount: e.target.value })} />
+            <input type="date" value={f.date} onChange={e => setF({ date: e.target.value })} />
+          </div>
+          <div className="exp-seg-label">Category</div>
+          <div className="exp-cat-grid">{EXPENSE_CATS.map(c => <button key={c.id} type="button" className={`exp-cat-btn ${f.category === c.id ? 'on' : ''}`} style={f.category === c.id ? { '--sc': c.color } : undefined} onClick={() => setF({ category: c.id })}>{c.icon} {c.label}</button>)}</div>
+          <div className="exp-seg-label">Paid by</div>
+          <div className="exp-seg">{[r, bk].map(p => <button key={p.id} type="button" className={f.paid_by === p.id ? 'on' : ''} style={f.paid_by === p.id ? { '--sc': p.color } : undefined} onClick={() => setF({ paid_by: p.id })}>{p.icon} {p.label}</button>)}</div>
+          <div className="exp-seg-label">Split</div>
+          <div className="exp-seg">
+            <button type="button" className={f.split === 'even' ? 'on' : ''} onClick={() => setF({ split: 'even' })}>Evenly</button>
+            <button type="button" className={f.split === 'rhodri' ? 'on' : ''} style={f.split === 'rhodri' ? { '--sc': r.color } : undefined} onClick={() => setF({ split: 'rhodri' })}>{r.icon} {r.label}'s</button>
+            <button type="button" className={f.split === 'becky' ? 'on' : ''} style={f.split === 'becky' ? { '--sc': bk.color } : undefined} onClick={() => setF({ split: 'becky' })}>{bk.icon} {bk.label}'s</button>
+            <button type="button" className={f.split === 'custom' ? 'on' : ''} onClick={() => setF({ split: 'custom' })}>Custom %</button>
+          </div>
+          {f.split === 'custom' && (
+            <div className="exp-custom">
+              <label>{r.icon} {r.label} pays {Math.round(Number(f.split_value) || 50)}% · {bk.icon} {bk.label} {100 - Math.round(Number(f.split_value) || 50)}%</label>
+              <input type="range" min="0" max="100" step="5" value={Number(f.split_value) || 50} onChange={e => setF({ split_value: Number(e.target.value) })} />
+            </div>
+          )}
+          <input type="text" placeholder="Note (optional)" value={f.note} onChange={e => setF({ note: e.target.value })} />
+          <div className="exp-form-btns">
+            <button className="btn-cancel" onClick={() => setEditing(null)}>Cancel</button>
+            <button className="btn-save" onClick={submit}><Plus size={14} /> {f.id ? 'Save changes' : 'Add expense'}</button>
+          </div>
+        </div>
+      ) : <button className="add-expense-btn" onClick={() => setEditing({ ...blank })}><Plus size={16} /> Add an expense</button>}
+
+      {expenses.length > 0 && (
+        <div className="exp-insights">
+          <div className="exp-insight-row">
+            <div className="exp-stat"><span className="exp-stat-num">{fmtEur(monthAmt)}</span><span className="exp-stat-lbl">this month</span></div>
+            <div className="exp-stat"><span className="exp-stat-num">{fmtEur(allAmt)}</span><span className="exp-stat-lbl">all time</span></div>
+            <div className="exp-stat"><span className="exp-stat-num" style={{ color: r.color }}>{fmtEur(paidR)}</span><span className="exp-stat-lbl">{r.label} paid</span></div>
+            <div className="exp-stat"><span className="exp-stat-num" style={{ color: bk.color }}>{fmtEur(paidB)}</span><span className="exp-stat-lbl">{bk.label} paid</span></div>
+          </div>
+          {byCat.length > 0 && <div className="exp-cat-bars">{byCat.slice(0, 6).map(c => (
+            <div key={c.id} className="exp-cat-bar"><span className="exp-cat-bar-lbl">{c.icon} {c.label}</span><span className="exp-cat-bar-track"><span className="exp-cat-bar-fill" style={{ width: `${(c.total / maxCat) * 100}%`, background: c.color }} /></span><span className="exp-cat-bar-amt">{fmtEur(c.total)}</span></div>
+          ))}</div>}
+        </div>
+      )}
+
+      {expenses.length > 0 && (
+        <div className="exp-filters">
+          <div className="exp-filter-seg">{['open', 'settled', 'all'].map(k => <button key={k} type="button" className={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>{k[0].toUpperCase() + k.slice(1)}</button>)}</div>
+          <select value={catFilter} onChange={e => setCatFilter(e.target.value)}><option value="all">All categories</option>{EXPENSE_CATS.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select>
+        </div>
+      )}
+
+      <div className="expense-list">
+        {visible.map(e => <Row key={e.id} e={e} />)}
+        {visible.length === 0 && <div className="expense-empty">{expenses.length === 0 ? 'No expenses yet. Add one when you next pay for something together.' : 'Nothing here with these filters.'}</div>}
       </div>
     </div>
   )
