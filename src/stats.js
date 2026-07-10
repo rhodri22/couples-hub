@@ -1,6 +1,9 @@
 // stats.js — streaks, points, and "who's pulling their weight" analytics
 import { parseISO, isSameDay, subDays, startOfDay, isWithinInterval, differenceInCalendarDays } from 'date-fns'
-import { PEOPLE } from './constants'
+import { PEOPLE, assigneeIds } from './constants'
+
+// The people who actually do chores (excludes Lana and the "both" placeholder).
+const ADULT_IDS = PEOPLE.filter(p => p.adult).map(p => p.id)
 
 // Household streak: consecutive days (ending today or yesterday) with >=1 completed task
 export function computeStreak(tasks) {
@@ -22,13 +25,11 @@ export function computePoints(tasks) {
   const pts = {}
   PEOPLE.forEach(p => { pts[p.id] = 0 })
   tasks.filter(t => t.completed).forEach(t => {
-    const who = t.assigned_to
-    if (pts[who] == null) pts[who] = 0
-    pts[who] += 1
-    if (t.due_date && t.completed_at) {
-      const onTime = differenceInCalendarDays(parseISO(t.completed_at), parseISO(t.due_date)) <= 0
-      if (onTime) pts[who] += 1
-    }
+    const ids = assigneeIds(t).filter(id => ADULT_IDS.includes(id))
+    if (ids.length === 0) return   // e.g. a task about Lana with no adult assigned
+    const onTime = t.due_date && t.completed_at &&
+      differenceInCalendarDays(parseISO(t.completed_at), parseISO(t.due_date)) <= 0
+    ids.forEach(who => { pts[who] += 1 + (onTime ? 1 : 0) })
   })
   return pts
 }
@@ -41,10 +42,8 @@ export function weeklyLeaderboard(tasks) {
   PEOPLE.forEach(p => { counts[p.id] = 0 })
   tasks.filter(t => t.completed && t.completed_at).forEach(t => {
     const d = startOfDay(parseISO(t.completed_at))
-    if (isWithinInterval(d, { start, end })) {
-      if (counts[t.assigned_to] == null) counts[t.assigned_to] = 0
-      counts[t.assigned_to] += 1
-    }
+    if (!isWithinInterval(d, { start, end })) return
+    assigneeIds(t).filter(id => ADULT_IDS.includes(id)).forEach(who => { counts[who] += 1 })
   })
   return counts
 }

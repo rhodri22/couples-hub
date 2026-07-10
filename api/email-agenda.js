@@ -25,7 +25,9 @@ export default async function handler(req, res) {
   const FROM = process.env.EMAIL_FROM || FROM_DEFAULT
   const isTest = req.query?.test === '1' || req.query?.test === 'true'
 
-  if (process.env.CRON_SECRET && !isTest && req.query?.secret !== process.env.CRON_SECRET) {
+  // Require the secret whenever it is configured — including for ?test=1, which
+  // previously bypassed it and let anyone send real email / drain the Resend quota.
+  if (process.env.CRON_SECRET && req.query?.secret !== process.env.CRON_SECRET) {
     res.status(401).json({ error: 'unauthorized' }); return
   }
   if (!SUPABASE_URL || !SUPABASE_KEY) { res.status(503).json({ error: 'no_supabase_env' }); return }

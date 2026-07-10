@@ -1,18 +1,35 @@
 // recurrence.js — recurring task spawning, chore rotation, vacation handling
-import { addDays, addWeeks, addMonths, addYears, parseISO, format } from 'date-fns'
+import { addDays, addWeeks, addMonths, addYears, parseISO, format, getDay } from 'date-fns'
 import { genId, PEOPLE } from './constants'
 
 const adults = () => PEOPLE.filter(p => p.adult).map(p => p.id)
 
-// Advance a date string by one recurrence period
-export function advanceDate(dateStr, recur) {
+function parseDays(s) {
+  return String(s || '').split(',').map(x => parseInt(x, 10)).filter(n => n >= 0 && n <= 6)
+}
+
+// Advance a date string by one recurrence period.
+// opts.days = comma weekday numbers (weekly multi-day, e.g. "2,4" = Tue & Thu);
+// opts.until = ISO date after which the series stops (returns null).
+export function advanceDate(dateStr, recur, opts = {}) {
   const d = parseISO(dateStr)
-  const next = recur === 'daily'   ? addDays(d, 1)
-             : recur === 'weekly'  ? addWeeks(d, 1)
-             : recur === 'monthly' ? addMonths(d, 1)
-             : recur === 'yearly'  ? addYears(d, 1)
-             : null
-  return next ? format(next, 'yyyy-MM-dd') : null
+  const days = parseDays(opts.days)
+  let next
+  if (recur === 'weekly' && days.length) {
+    let cur = addDays(d, 1)
+    for (let i = 0; i < 7; i++) { if (days.includes(getDay(cur))) { next = cur; break } cur = addDays(cur, 1) }
+    if (!next) next = addDays(d, 7)
+  } else {
+    next = recur === 'daily'   ? addDays(d, 1)
+         : recur === 'weekly'  ? addWeeks(d, 1)
+         : recur === 'monthly' ? addMonths(d, 1)
+         : recur === 'yearly'  ? addYears(d, 1)
+         : null
+  }
+  if (!next) return null
+  const out = format(next, 'yyyy-MM-dd')
+  if (opts.until && out > opts.until) return null   // series has ended
+  return out
 }
 
 // Given a rotation string "rhodri,becky" and the current assignee,
@@ -33,7 +50,7 @@ export function nextAssignee(rotation, current, away = []) {
 // Respects rotation and vacation mode.
 export function buildNextInstance(task, away = []) {
   if (!task.recur || task.recur === 'none' || !task.due_date) return null
-  const nextDate = advanceDate(task.due_date, task.recur)
+  const nextDate = advanceDate(task.due_date, task.recur, { days: task.recur_days, until: task.recur_until })
   if (!nextDate) return null
 
   let assignee = task.rotation

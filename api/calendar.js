@@ -47,14 +47,17 @@ function addDaysStr(dateStr, n) {
   return dateOnly(d)
 }
 
-function rruleFor(recur) {
-  switch (recur) {
-    case 'daily':   return 'RRULE:FREQ=DAILY'
-    case 'weekly':  return 'RRULE:FREQ=WEEKLY'
-    case 'monthly': return 'RRULE:FREQ=MONTHLY'
-    case 'yearly':  return 'RRULE:FREQ=YEARLY'
-    default:        return null
+const BYDAY = { 0: 'SU', 1: 'MO', 2: 'TU', 3: 'WE', 4: 'TH', 5: 'FR', 6: 'SA' }
+function rruleFor(e) {
+  const freq = { daily: 'DAILY', weekly: 'WEEKLY', monthly: 'MONTHLY', yearly: 'YEARLY' }[e.recur]
+  if (!freq) return null
+  const parts = [`FREQ=${freq}`]
+  if (e.recur === 'weekly' && e.recur_days) {
+    const days = String(e.recur_days).split(',').map(n => parseInt(n, 10)).filter(n => n >= 0 && n <= 6).map(n => BYDAY[n])
+    if (days.length) parts.push(`BYDAY=${days.join(',')}`)
   }
+  if (e.recur_until) parts.push(`UNTIL=${String(e.recur_until).replace(/-/g, '')}T235959Z`)
+  return `RRULE:${parts.join(';')}`
 }
 
 function buildICS(events, household) {
@@ -74,15 +77,17 @@ function buildICS(events, household) {
     lines.push(`UID:${e.id}@couples-hub`)
     lines.push(`DTSTAMP:${stamp()}`)
     if (e.all_day === false && e.start_time) {
-      const [h, m] = e.start_time.split(':')
+      const [h, m] = e.start_time.split(':').map(Number)
       lines.push(`DTSTART:${dateOnly(start)}T${pad(h)}${pad(m)}00`)
-      lines.push(`DTEND:${dateOnly(start)}T${pad(h)}${pad(m)}00`)
+      // Give timed events a 1-hour default duration (a zero-length event shows oddly in calendars)
+      const endDt = new Date(`${start}T00:00:00Z`); endDt.setUTCHours(h + 1, m, 0, 0)
+      lines.push(`DTEND:${dateOnly(endDt)}T${pad(endDt.getUTCHours())}${pad(endDt.getUTCMinutes())}00`)
     } else {
       // All-day: DTEND is exclusive, so add 1 day to the end date
       lines.push(`DTSTART;VALUE=DATE:${dateOnly(start)}`)
       lines.push(`DTEND;VALUE=DATE:${addDaysStr(end, 1)}`)
     }
-    const rrule = rruleFor(e.recur)
+    const rrule = rruleFor(e)
     if (rrule) lines.push(rrule)
     lines.push(`SUMMARY:${esc(e.title)}`)
     if (e.notes) lines.push(`DESCRIPTION:${esc(e.notes)}`)

@@ -5,13 +5,14 @@ import {
   CalendarHeart, AlarmClock, Flame, Trophy, Plane, LayoutTemplate,
   Sparkles, Repeat, Users, MoreHorizontal, CalendarPlus, Wallet,
   Wand2, Award, Star, Gift, HeartPulse, Wine, Crown, Lock, Send, Loader2,
-  TrendingUp, Gem, Mail, Download, Copy
+  TrendingUp, Gem, Mail, Download, Copy, Mic, Luggage
 } from 'lucide-react'
 import { supabase, HOUSEHOLD_ID } from './supabase'
 import {
   requestNotificationPermission, scheduleNotification, cancelNotification,
   scheduleEventNotification, cancelEventNotification, rescheduleAll, updateBadge
 } from './notifications'
+import { subscribeToPush, ensurePushSubscribed } from './push'
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday,
   addMonths, subMonths, parseISO, isBefore, startOfDay, isWithinInterval,
@@ -41,7 +42,10 @@ export default function App() {
   const [rewards, setRewards]   = useState(DEMO_REWARDS)
   const [dateIdeas, setDateIdeas] = useState(DEMO_DATE_IDEAS)
   const [expenses, setExpenses] = useState([])
-  const [view, setView]         = useState('home')
+  const [view, setView]         = useState(() => {
+    try { const v = new URLSearchParams(window.location.search).get('view'); if (['home', 'tasks', 'calendar', 'expenses', 'notes', 'us'].includes(v)) return v } catch {}
+    return 'calendar'
+  })
   const [taskLayout, setTaskLayout] = useState('list')
   const [whoami, setWhoami]     = useState(() => { try { return localStorage.getItem('hub-whoami') || '' } catch { return '' } })
   const [showWelcome, setShowWelcome] = useState(() => { try { return !localStorage.getItem('hub-welcomed') } catch { return true } })
@@ -53,6 +57,8 @@ export default function App() {
   const [subscribeModal, setSubscribeModal] = useState(false)
   const [emailModal, setEmailModal]   = useState(false)
   const [aiModal, setAiModal]       = useState(false)
+  const [voiceModal, setVoiceModal] = useState(false)
+  const [travelModal, setTravelModal] = useState(false)
   const [toast, setToast]           = useState(null)
   const [syncStatus, setSyncStatus] = useState('idle')
   const [notifPerm, setNotifPerm]   = useState(typeof Notification !== 'undefined' ? Notification.permission : 'default')
@@ -84,9 +90,27 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rewards',    filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadRewards)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'date_ideas', filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadDateIdeas)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses',  filter: `household_id=eq.${HOUSEHOLD_ID}` }, loadExpenses)
-      .subscribe()
+      .subscribe(status => { if (status === 'SUBSCRIBED') loadAll() })
     return () => supabase.removeChannel(ch)
   }, [])
+
+  // Refetch when the app returns to the foreground / reconnects, so a device
+  // waking from sleep never shows stale data (iOS drops the realtime socket).
+  useEffect(() => {
+    if (!supabase) return
+    const refetch = () => { if (document.visibilityState === 'visible') loadAll() }
+    document.addEventListener('visibilitychange', refetch)
+    window.addEventListener('focus', refetch)
+    window.addEventListener('online', refetch)
+    return () => {
+      document.removeEventListener('visibilitychange', refetch)
+      window.removeEventListener('focus', refetch)
+      window.removeEventListener('online', refetch)
+    }
+  }, [])
+
+  // Keep this device subscribed to background push once permission is granted.
+  useEffect(() => { if (whoami && notifPerm === 'granted') ensurePushSubscribed(whoami) }, [whoami, notifPerm])
 
   async function loadAll() { await Promise.all([loadTasks(), loadEvents(), loadNotes(), loadTemplates(), loadSettings(), loadMoods(), loadRewards(), loadDateIdeas(), loadExpenses()]) }
   function flash() { setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 1400) }
@@ -121,17 +145,19 @@ export default function App() {
   async function loadExpenses()  { if (!supabase) return; const { data, error } = await supabase.from('expenses').select('*').eq('household_id', HOUSEHOLD_ID).order('created_at', { ascending: false }); if (!error) { setExpenses(data); flash() } }
 
   // ── Task CRUD ──
-  async function saveTask(task) {
+  async function saveTask(task, opts = {}) {
     setSyncStatus('syncing')
     const row = normalizeAssign({ ...task, household_id: HOUSEHOLD_ID })
-    if (!row.due_date) row.due_date = format(addDays(new Date(), 7), 'yyyy-MM-dd')
+    if (!row.due_date) row.due_date = null   // undated tasks stay undated (no phantom deadline)
     if (supabase) {
       const r = await resilientUpsert('tasks', row)
       if (!r.ok) { setSyncStatus('offline'); showError(`Couldn't save task — ${r.message}`); return }
       if (r.dropped.includes('assignees') && !_migrateNudged) { _migrateNudged = true; showError('Saved — but with a single assignee only. To assign several people, run the latest database update (schema.sql) in Supabase → SQL Editor.') }
     }
+    const isNew = tasks.findIndex(t => t.id === row.id) < 0
     setTasks(prev => { const i = prev.findIndex(t => t.id === row.id); if (i >= 0) { const n = [...prev]; n[i] = row; return n } return [row, ...prev] })
     scheduleNotification(row); flash()
+    if (!opts.silent) enqueuePartnerNudge('task', row, isNew)
   }
   async function deleteTask(id) {
     cancelNotification(id)
@@ -150,23 +176,28 @@ export default function App() {
     setExpenses(prev => prev.filter(e => e.id !== id))
   }
   async function settleAll() { for (const e of expenses.filter(x => !x.settled)) await saveExpense({ ...e, settled: true, settled_at: new Date().toISOString() }) }
+  // Spawn the next instance of a recurring task — but only if an identical
+  // upcoming instance doesn't already exist. This stops duplicates piling up
+  // when a recurring task is un-ticked and re-ticked.
+  async function spawnNextIfNeeded(task) {
+    if (!task.recur || task.recur === 'none') return
+    const next = buildNextInstance(task, away)
+    if (!next) return
+    const dupe = tasks.some(t => t.id !== task.id && !t.completed && t.title === next.title && t.due_date === next.due_date && t.recur === next.recur)
+    if (dupe) return
+    await saveTask(next, { silent: true })
+  }
   async function toggleComplete(task) {
     const nowDone = !task.completed
     const updated = { ...task, completed: nowDone, status: nowDone ? 'done' : 'todo', completed_at: nowDone ? new Date().toISOString() : null }
     await saveTask(updated)
-    // Recurring: spawn next instance when completed (#1, #2, #6)
-    if (nowDone && task.recur && task.recur !== 'none') {
-      const next = buildNextInstance(task, away)
-      if (next) await saveTask(next)
-    }
+    if (nowDone) await spawnNextIfNeeded(task)
   }
   async function setTaskStatus(task, status) {
     const completed = status === 'done'
     const wasDone = task.completed
     await saveTask({ ...task, status, completed, completed_at: completed ? (task.completed_at || new Date().toISOString()) : null })
-    if (completed && !wasDone && task.recur && task.recur !== 'none') {
-      const next = buildNextInstance(task, away); if (next) await saveTask(next)
-    }
+    if (completed && !wasDone) await spawnNextIfNeeded(task)
   }
   async function moveKanban(task, status) { await saveTask({ ...task, status, completed: status === 'done', completed_at: status === 'done' ? new Date().toISOString() : null }) }
   async function snooze(task, hours) {
@@ -181,7 +212,7 @@ export default function App() {
   }
 
   // ── Event CRUD ──
-  async function saveEvent(ev) {
+  async function saveEvent(ev, opts = {}) {
     setSyncStatus('syncing')
     const row = normalizeAssign({ ...ev, household_id: HOUSEHOLD_ID })
     if (supabase) {
@@ -189,8 +220,10 @@ export default function App() {
       if (!r.ok) { setSyncStatus('offline'); showError(`Couldn't save event — ${r.message}`); return { ok: false, message: r.message } }
       if (r.dropped.includes('assignees') && !_migrateNudged) { _migrateNudged = true; showError('Saved — but with a single assignee only. To assign several people, run the latest database update (schema.sql) in Supabase → SQL Editor.') }
     }
+    const isNew = events.findIndex(e => e.id === row.id) < 0
     setEvents(prev => { const i = prev.findIndex(e => e.id === row.id); if (i >= 0) { const n = [...prev]; n[i] = row; return n } return [...prev, row] })
     scheduleEventNotification(row); flash()
+    if (!opts.silent) enqueuePartnerNudge('event', row, isNew)
     return { ok: true }
   }
   async function deleteEvent(id) {
@@ -218,9 +251,9 @@ export default function App() {
         completed_at: null, snoozed_until: null, rotation: null,
         subtasks: (item.subtasks || []).map(s => ({ id: genId(), text: s, done: false })),
         created_at: new Date().toISOString(),
-      })
+      }, { silent: true })
     }
-    setTplModal(false); setView('kanban')
+    setTplModal(false); setView('tasks'); setTaskLayout('board')
   }
 
   // ── Settings / vacation (#6) ──
@@ -275,13 +308,62 @@ export default function App() {
 
   // ── AI brain (calls /api/ai serverless function) ──
   async function callAI(mode, payload) {
+    const headers = { 'content-type': 'application/json' }
+    const hubSecret = import.meta.env.VITE_HUB_SECRET
+    if (hubSecret) headers['x-hub-secret'] = hubSecret
     const res = await fetch('/api/ai', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers,
       body: JSON.stringify({ mode, payload }),
     })
     if (!res.ok) { let code = res.status; try { code = (await res.json()).error || code } catch {} throw Object.assign(new Error('ai_failed'), { code }) }
     return res.json()
   }
+
+  // ── Voice / natural-language capture (#3) ──
+  const aiContext = () => ({ today: format(new Date(), 'yyyy-MM-dd'), tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'Europe/Berlin' } })() })
+  async function parseSmart(text) {
+    const res = await callAI('create_item', { text, ...aiContext() })
+    return res.parsed || null
+  }
+  async function smartCreate(p) {
+    if (!p || !p.title) return
+    const now = new Date().toISOString()
+    const todayStr = format(new Date(), 'yyyy-MM-dd')
+    if (p.kind === 'event') {
+      const timed = !!p.time && p.all_day === false
+      await saveEvent({
+        id: genId(), title: p.title, event_type: p.event_type || 'other', assigned_to: p.assignee || 'both',
+        start_date: p.date || todayStr, end_date: p.end_date || p.date || todayStr,
+        all_day: !timed, start_time: timed ? p.time : '', recur: p.recur || 'none', reminder_minutes: 1440,
+        notes: p.notes || '', created_at: now,
+      })
+    } else {
+      await saveTask({
+        id: genId(), title: p.title, category: p.category || 'home', assigned_to: p.assignee || 'both',
+        status: 'todo', due_date: p.date || '', reminder_minutes: p.date ? 1440 : null,
+        completed: false, recur: p.recur || 'none', completed_at: null, snoozed_until: null,
+        rotation: null, subtasks: [], created_at: now,
+      })
+    }
+  }
+
+  // ── Travel import (#4) ──
+  async function parseTravel(text) {
+    const res = await callAI('parse_travel', { text, ...aiContext() })
+    return (res.parsed && Array.isArray(res.parsed.events)) ? res.parsed.events : []
+  }
+  async function addTravelEvents(list) {
+    for (const e of list) {
+      if (!e || !e.start_date) continue
+      await saveEvent({
+        id: genId(), title: e.title || 'Trip', event_type: e.event_type || 'holiday', assigned_to: 'both',
+        start_date: e.start_date, end_date: e.end_date || e.start_date,
+        all_day: e.all_day !== false && !e.start_time, start_time: e.start_time || '',
+        recur: 'none', reminder_minutes: 1440, notes: e.notes || '', created_at: new Date().toISOString(),
+      }, { silent: true })
+    }
+  }
+
   // Apply an AI week-plan suggestion: update existing task (by id) or create new
   async function applySuggestion(s) {
     const existing = s.id && tasks.find(t => t.id === s.id)
@@ -292,11 +374,39 @@ export default function App() {
         status: 'todo', due_date: s.date || '', reminder_minutes: s.date ? 1440 : null,
         completed: false, recur: 'none', completed_at: null, snoozed_until: null,
         rotation: null, subtasks: [], created_at: new Date().toISOString(),
-      })
+      }, { silent: true })
     }
   }
 
-  async function enableNotifications() { setNotifPerm(await requestNotificationPermission()) }
+  async function enableNotifications() {
+    const perm = await requestNotificationPermission()
+    setNotifPerm(perm)
+    if (perm !== 'granted') {
+      if (perm === 'denied') showError('Notifications are blocked — turn them on in your browser/site settings, then tap again.')
+      else if (perm === 'unsupported') showInfo('On iPhone, add the app to your Home Screen first, then enable notifications from there.')
+      return
+    }
+    const r = await subscribeToPush(whoami)
+    if (r.ok) showInfo("Notifications on — you'll be reminded even when the app is closed 🔔")
+    else if (r.reason === 'no_vapid_key') showInfo('Notifications on while the app is open. (Background push not set up yet — see PUSH_SETUP.md.)')
+    else if (r.reason === 'unsupported') showInfo('This browser can only notify while the app is open. On iPhone, add it to your Home Screen first.')
+    else showError(`Couldn't finish enabling background push — ${r.reason || 'unknown error'}`)
+  }
+
+  // Nudge the other partner's devices when a new task/event is added.
+  async function enqueuePartnerNudge(kind, row, isNew) {
+    if (!supabase || !isNew || !whoami) return
+    const partner = whoami === 'rhodri' ? 'becky' : whoami === 'becky' ? 'rhodri' : null
+    if (!partner) return
+    const me = (getPerson(whoami) || {}).label || 'Your partner'
+    const title = kind === 'event' ? `📅 ${me} added an event` : `📝 ${me} added a task`
+    try {
+      await supabase.from('push_outbox').insert({
+        household_id: HOUSEHOLD_ID, target_person: partner,
+        title, body: row.title || '', url: kind === 'event' ? '/?view=calendar' : '/?view=tasks',
+      })
+    } catch (e) { /* non-fatal */ }
+  }
 
   // ── Quick add via natural language (#3) ──
   async function quickAdd(text) {
@@ -341,6 +451,9 @@ export default function App() {
               </div>
             )}
           </div>
+          <button className="icon-btn" onClick={() => setVoiceModal(true)} title="Add by voice">
+            <Mic size={16} />
+          </button>
           <button className="icon-btn ai-btn" onClick={() => setAiModal(true)} title="AI assistant">
             <Wand2 size={16} />
           </button>
@@ -429,10 +542,12 @@ export default function App() {
       {subscribeModal && <SubscribeModal onClose={() => setSubscribeModal(false)} />}
       {emailModal && <EmailModal settings={settings} onSave={saveSettings} onError={showError} onClose={() => setEmailModal(false)} />}
       {moreSheet && <MoreSheet onClose={() => setMoreSheet(false)} goto={v => { setView(v); setMoreSheet(false) }}
-                      open={{ ai: () => { setAiModal(true); setMoreSheet(false) }, templates: () => { setTplModal(true); setMoreSheet(false) }, away: () => { setAwayModal(true); setMoreSheet(false) }, email: () => { setEmailModal(true); setMoreSheet(false) }, subscribe: () => { setSubscribeModal(true); setMoreSheet(false) }, welcome: () => { setShowWelcome(true); setMoreSheet(false) } }}
+                      open={{ ai: () => { setAiModal(true); setMoreSheet(false) }, voice: () => { setVoiceModal(true); setMoreSheet(false) }, travel: () => { setTravelModal(true); setMoreSheet(false) }, templates: () => { setTplModal(true); setMoreSheet(false) }, away: () => { setAwayModal(true); setMoreSheet(false) }, email: () => { setEmailModal(true); setMoreSheet(false) }, subscribe: () => { setSubscribeModal(true); setMoreSheet(false) }, welcome: () => { setShowWelcome(true); setMoreSheet(false) } }}
                       whoami={whoami} away={away} />}
       {showWelcome && <WelcomeModal whoami={whoami} onChoose={chooseWhoami} onClearSample={clearSampleData} onClose={finishWelcome} demo={!supabase} />}
       {aiModal && <AiModal tasks={tasks} events={events} away={away} moods={moods} callAI={callAI} onApply={applySuggestion} onClose={() => setAiModal(false)} />}
+      {voiceModal && <VoiceAddModal onParse={parseSmart} onCreate={smartCreate} onClose={() => setVoiceModal(false)} />}
+      {travelModal && <TravelModal onParse={parseTravel} onAdd={addTravelEvents} onClose={() => setTravelModal(false)} />}
 
       {toast && (
         <div className={`toast toast-${toast.type}`} onClick={() => setToast(null)} role="status">
@@ -576,8 +691,12 @@ function eventOccursOn(e, day) {
   const r = e.recur
   if (!r || r === 'none' || isBefore(startOfDay(day), s)) return false
   const D = startOfDay(day)
+  if (e.recur_until && format(D, 'yyyy-MM-dd') > e.recur_until) return false   // bounded end date
   if (r === 'daily') return true
-  if (r === 'weekly') return D.getDay() === s.getDay()
+  if (r === 'weekly') {
+    const days = String(e.recur_days || '').split(',').map(n => parseInt(n, 10)).filter(n => n >= 0 && n <= 6)
+    return days.length ? days.includes(D.getDay()) : D.getDay() === s.getDay()  // multi-weekday (Tue & Thu) or same-weekday
+  }
   if (r === 'monthly') return D.getDate() === s.getDate()
   if (r === 'yearly') return D.getDate() === s.getDate() && D.getMonth() === s.getMonth()
   return false
@@ -859,6 +978,25 @@ function NotesView({ notes, events, tasks, onSave, onDelete }) {
 }
 
 // ─── Task modal (#1 recur, #2 rotation, #9 subtasks) ──────────────────────────
+const WEEKDAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['0', 'Sun']]
+// Shared repeat extras: pick specific weekdays (for weekly) + an optional end date.
+function RecurExtras({ f, set }) {
+  if (!f.recur || f.recur === 'none') return null
+  const days = String(f.recur_days || '').split(',').filter(Boolean)
+  const toggle = d => { const s = new Set(days); s.has(d) ? s.delete(d) : s.add(d); set('recur_days', [...s].join(',')) }
+  return (
+    <div className="form-row">
+      {f.recur === 'weekly' && (
+        <div style={{ marginBottom: 8 }}>
+          <span className="form-label">On these days <em className="form-hint">optional — blank keeps the same weekday</em></span>
+          <div className="person-grid">{WEEKDAYS.map(([d, l]) => <button key={d} type="button" className={`person-btn ${days.includes(d) ? 'active' : ''}`} onClick={() => toggle(d)}>{l}</button>)}</div>
+        </div>
+      )}
+      <label>Ends <em className="form-hint">optional</em><input type="date" value={f.recur_until || ''} onChange={e => set('recur_until', e.target.value || null)} /></label>
+    </div>
+  )
+}
+
 function TaskModal({ task, away, onSave, onClose }) {
   const isNew = !task?.id
   const [f, setF] = useState({
@@ -866,6 +1004,7 @@ function TaskModal({ task, away, onSave, onClose }) {
     assignees: assigneeIds(task), status: task?.status || 'todo',
     due_date: task?.due_date || '', reminder_minutes: task?.reminder_minutes ?? 1440,
     completed: task?.completed || false, recur: task?.recur || 'none',
+    recur_days: task?.recur_days || '', recur_until: task?.recur_until || null,
     completed_at: task?.completed_at || null, snoozed_until: task?.snoozed_until || null,
     rotation: task?.rotation || null, subtasks: task?.subtasks || [],
     created_at: task?.created_at || new Date().toISOString(),
@@ -906,6 +1045,8 @@ function TaskModal({ task, away, onSave, onClose }) {
             {f.due_date && <label>Reminder<select value={f.reminder_minutes ?? ''} onChange={e => set('reminder_minutes', Number(e.target.value))}>{REMINDER_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}</select></label>}
           </div>
 
+          <RecurExtras f={f} set={set} />
+
           {f.recur !== 'none' && (
             <div className="form-row"><span className="form-label">Rotate between (optional)</span>
               <div className="person-grid">{PEOPLE.filter(p => p.id !== 'both').map(p => <button key={p.id} type="button" className={`person-btn ${rotationList.includes(p.id) ? 'active' : ''}`} style={{ '--pc': p.color }} onClick={() => toggleRotation(p.id)}>{p.icon} {p.label}</button>)}</div>
@@ -938,6 +1079,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
     assignees: assigneeIds(event), start_date: event?.start_date || format(new Date(), 'yyyy-MM-dd'),
     end_date: event?.end_date || event?.start_date || format(new Date(), 'yyyy-MM-dd'),
     all_day: event?.all_day ?? true, start_time: event?.start_time || '', recur: event?.recur || 'none',
+    recur_days: event?.recur_days || '', recur_until: event?.recur_until || null,
     reminder_minutes: event?.reminder_minutes ?? 1440, notes: event?.notes || '', created_at: event?.created_at || new Date().toISOString(),
   })
   const [err, setErr] = useState('')
@@ -980,6 +1122,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
             <label>Repeat<select value={f.recur} onChange={e => set('recur', e.target.value)}>{RECUR_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}</select></label>
             <label>Reminder<select value={f.reminder_minutes} onChange={e => set('reminder_minutes', Number(e.target.value))}>{REMINDER_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}</select></label>
           </div>
+          <RecurExtras f={f} set={set} />
           <label>Notes<textarea value={f.notes} onChange={e => set('notes', e.target.value)} placeholder="Details, links, things to remember…" rows={2} /></label>
 
           {!isNew && (
@@ -1559,12 +1702,9 @@ function HomeView({ whoami, tasks, events, away, onQuickAdd, onTemplates, onTogg
   const me = whoami ? getPerson(whoami) : null
   const greeting = `Good ${part}${me && me.adult ? `, ${me.label}` : ''}`
 
-  const sameMD = (a, b) => a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
-  const eventsOnDay = day => events.filter(e => {
-    const s = parseISO(e.start_date), en = parseISO(e.end_date || e.start_date)
-    const span = isWithinInterval(day, { start: startOfDay(s), end: startOfDay(en) }) || isSameDay(day, s)
-    return span || (e.recur === 'yearly' && sameMD(s, day))
-  })
+  // Use the same recurrence logic as the calendar (daily/weekly/monthly/yearly
+  // + multi-day spans), so repeating events show on Today / "This week" too.
+  const eventsOnDay = day => events.filter(e => eventOccursOn(e, day))
   const tasksDueOn = day => tasks.filter(t => !t.completed && t.due_date && isSameDay(parseISO(t.due_date), day))
 
   const todayEvents = eventsOnDay(today)
@@ -1679,6 +1819,128 @@ function HomeView({ whoami, tasks, events, away, onQuickAdd, onTemplates, onTogg
 // ════════════════════════════════════════════════════════════════════════════
 // MORE sheet (progressive disclosure)
 // ════════════════════════════════════════════════════════════════════════════
+const WHO_OPTS = [{ id: 'both', label: 'Both' }, { id: 'rhodri', label: 'Rhodri' }, { id: 'becky', label: 'Becky' }, { id: 'lana', label: 'Lana' }]
+const RECUR_OPTS = [['none', "Doesn't repeat"], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']]
+
+function VoiceAddModal({ onParse, onCreate, onClose }) {
+  const [text, setText] = useState('')
+  const [rec, setRec] = useState(null)
+  const [listening, setListening] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [p, setP] = useState(null)
+  const [err, setErr] = useState('')
+  const setField = (k, v) => setP(prev => ({ ...prev, [k]: v }))
+
+  function toggleMic() {
+    const SR = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+    if (!SR) { setErr("This browser can't listen — type it below instead. (On iPhone, use the keyboard mic.)"); return }
+    if (listening && rec) { try { rec.stop() } catch {}; return }
+    const r = new SR()
+    r.lang = 'en-GB'; r.interimResults = true; r.continuous = false
+    r.onresult = e => setText(Array.from(e.results).map(x => x[0].transcript).join(''))
+    r.onerror = () => setListening(false)
+    r.onend = () => setListening(false)
+    setRec(r); setErr(''); setListening(true)
+    try { r.start() } catch { setListening(false) }
+  }
+
+  async function understand() {
+    if (!text.trim()) return
+    setBusy(true); setErr('')
+    try {
+      const out = await onParse(text.trim())
+      if (out && out.title) setP(out)
+      else setErr("Couldn't make sense of that — try rephrasing.")
+    } catch (e) {
+      setErr(e.code === 'no_key' ? 'Voice needs an ANTHROPIC_API_KEY set in Vercel.' : 'The voice service is unavailable right now.')
+    } finally { setBusy(false) }
+  }
+
+  async function add() { await onCreate(p); onClose() }
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header"><h2><Mic size={18} style={{ verticalAlign: '-3px', marginRight: 6 }} />Add by voice</h2><button className="modal-close" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-form">
+          <p style={{ margin: '0 0 10px', color: 'var(--muted, #667)', fontSize: 13 }}>Say or type something like <em>"Walk Lana tomorrow 8am"</em> or <em>"Dentist next Tuesday at 3pm"</em>.</p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+            <textarea value={text} onChange={e => setText(e.target.value)} rows={2} placeholder="What do you want to add?" style={{ flex: 1, resize: 'vertical' }} />
+            <button className="btn-save" onClick={toggleMic} title="Speak" style={{ padding: '0 14px', background: listening ? '#c0453b' : undefined }}><Mic size={18} /></button>
+          </div>
+          {!p && <div className="modal-actions"><button className="btn-cancel" onClick={onClose}>Cancel</button><button className="btn-save" onClick={understand} disabled={busy || !text.trim()}>{busy ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />} Understand</button></div>}
+          {err && <p style={{ color: '#c0453b', fontSize: 13, margin: '8px 0 0' }}>{err}</p>}
+
+          {p && (
+            <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #e3e3da)', paddingTop: 14, display: 'grid', gap: 10 }}>
+              <label>Title<input value={p.title || ''} onChange={e => setField('title', e.target.value)} /></label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <label style={{ flex: 1 }}>Type<select value={p.kind === 'event' ? 'event' : 'task'} onChange={e => setField('kind', e.target.value)}><option value="task">Task</option><option value="event">Event</option></select></label>
+                <label style={{ flex: 1 }}>Who<select value={p.assignee || 'both'} onChange={e => setField('assignee', e.target.value)}>{WHO_OPTS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></label>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <label style={{ flex: 1 }}>Date<input type="date" value={p.date || ''} onChange={e => setField('date', e.target.value)} /></label>
+                <label style={{ flex: 1 }}>Time<input type="time" value={p.time || ''} onChange={e => setField('time', e.target.value ? e.target.value : null)} /></label>
+              </div>
+              <label>Repeat<select value={p.recur || 'none'} onChange={e => setField('recur', e.target.value)}>{RECUR_OPTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+              <div className="modal-actions"><button className="btn-cancel" onClick={() => setP(null)}>Back</button><button className="btn-save" onClick={add}><Check size={15} /> Add to hub</button></div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TravelModal({ onParse, onAdd, onClose }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [events, setEvents] = useState(null)
+  const [err, setErr] = useState('')
+
+  async function scan() {
+    if (!text.trim()) return
+    setBusy(true); setErr('')
+    try {
+      const evs = await onParse(text.trim())
+      setEvents(evs)
+      if (!evs.length) setErr('No flights, hotels or trains found in that text.')
+    } catch (e) {
+      setErr(e.code === 'no_key' ? 'Travel import needs an ANTHROPIC_API_KEY set in Vercel.' : 'The travel service is unavailable right now.')
+    } finally { setBusy(false) }
+  }
+  async function addAll() { await onAdd(events); onClose() }
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header"><h2><Luggage size={18} style={{ verticalAlign: '-3px', marginRight: 6 }} />Import a trip</h2><button className="modal-close" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-form">
+          <p style={{ margin: '0 0 10px', color: 'var(--muted, #667)', fontSize: 13 }}>Paste a flight, hotel or train confirmation email and it'll pull out the dates and add them to your calendar.</p>
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={7} placeholder="Paste your booking confirmation here…" style={{ width: '100%', resize: 'vertical' }} />
+          {!events && <div className="modal-actions"><button className="btn-cancel" onClick={onClose}>Cancel</button><button className="btn-save" onClick={scan} disabled={busy || !text.trim()}>{busy ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />} Find bookings</button></div>}
+          {err && <p style={{ color: '#c0453b', fontSize: 13, margin: '8px 0 0' }}>{err}</p>}
+
+          {events && events.length > 0 && (
+            <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #e3e3da)', paddingTop: 14 }}>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {events.map((e, i) => (
+                  <div key={i} style={{ border: '1px solid var(--line, #e3e3da)', borderRadius: 10, padding: '10px 12px' }}>
+                    <div style={{ fontWeight: 600 }}>{e.title}</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted, #667)' }}>{e.start_date}{e.start_time ? ` · ${e.start_time}` : ''}{e.end_date && e.end_date !== e.start_date ? ` → ${e.end_date}` : ''}</div>
+                    {e.notes && <div style={{ fontSize: 12, color: 'var(--muted, #667)', marginTop: 3 }}>{e.notes}</div>}
+                  </div>
+                ))}
+              </div>
+              <div className="modal-actions"><button className="btn-cancel" onClick={() => setEvents(null)}>Back</button><button className="btn-save" onClick={addAll}><Check size={15} /> Add {events.length} to calendar</button></div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function MoreSheet({ onClose, goto, open, whoami, away }) {
   const me = whoami ? getPerson(whoami) : null
   const Row = ({ icon, label, sub, onClick }) => (
@@ -1700,6 +1962,8 @@ function MoreSheet({ onClose, goto, open, whoami, away }) {
           <div className="more-group-label">Tools</div>
           <div className="more-group">
             <Row icon={<Wand2 size={17} />} label="AI assistant" sub="Plan the week, ideas" onClick={open.ai} />
+            <Row icon={<Mic size={17} />} label="Add by voice" sub="Speak a task or event" onClick={open.voice} />
+            <Row icon={<Luggage size={17} />} label="Import a trip" sub="Paste a flight / hotel confirmation" onClick={open.travel} />
             <Row icon={<LayoutTemplate size={17} />} label="Templates" onClick={open.templates} />
             <Row icon={<Plane size={17} />} label="Away / vacation" sub={away.length ? `${away.map(id => getPerson(id).label).join(' & ')} away` : undefined} onClick={open.away} />
             <Row icon={<Mail size={17} />} label="Email reminders" onClick={open.email} />

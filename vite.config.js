@@ -22,6 +22,9 @@ export default defineConfig({
         ]
       },
       workbox: {
+        // Fold our Web Push handlers (public/push-sw.js) into the generated
+        // service worker, so it can receive push while the app is closed.
+        importScripts: ['push-sw.js'],
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [
           {

@@ -1,0 +1,9 @@
+{
+  "name": "couples-hub-alexa",
+  "version": "1.0.0",
+  "description": "Private Alexa skill for Couple's Hub",
+  "main": "index.js",
+  "dependencies": {
+    "ask-sdk-core": "^2.14.0"
+  }
+}

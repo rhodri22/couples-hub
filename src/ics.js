@@ -33,7 +33,11 @@ export function buildEventICS(ev) {
   if (ev.recur && RRULE[ev.recur]) lines.push(`RRULE:${RRULE[ev.recur]}`)
   lines.push(`SUMMARY:${esc(ev.title)}`)
   if (ev.notes) lines.push(`DESCRIPTION:${esc(ev.notes)}`)
-  if (ev.reminder_minutes) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:-PT${ev.reminder_minutes}M`, `DESCRIPTION:${esc(ev.title)}`, 'END:VALARM')
+  if (ev.reminder_minutes != null) {
+    const mins = Number(ev.reminder_minutes)
+    const trigger = mins > 0 ? `-PT${mins}M` : 'PT0S'   // 0 = "at time of event" (a valid trigger, not a dropped alarm)
+    lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:${trigger}`, `DESCRIPTION:${esc(ev.title)}`, 'END:VALARM')
+  }
   lines.push('END:VEVENT', 'END:VCALENDAR')
   return lines.join('\r\n')
 }
