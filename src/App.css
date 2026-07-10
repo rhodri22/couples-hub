@@ -1959,3 +1959,32 @@ input[type="number"], textarea, .shop-item-input, .shop-qty-input,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Mobile fixes (found in live preview) ── */
+@media (max-width: 600px) {
+  /* backdrop-filter on .filters-bar creates a containing block that traps the
+     fixed bottom nav inside it — kill the glass there; the bar only holds
+     filter chips on mobile anyway */
+  .filters-bar { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  /* keep the title on one line (the base type rule was overriding the old
+     mobile shrink because it appears later in the file) */
+  .app-title { font-size: 1.05rem; white-space: nowrap; }
+  .header-left { min-width: 0; }
+}
+@media (max-width: 600px) {
+  .app-header { gap: 8px; padding-left: 14px; padding-right: 14px; }
+  .header-left { flex: 1 1 auto; overflow: hidden; gap: 7px; }
+  .app-title { overflow: hidden; text-overflow: ellipsis; }
+  .header-right { flex-shrink: 0; gap: 7px; }
+}
+@media (max-width: 600px) {
+  /* Theme + AI live in the More sheet on phones; keep the header breathable.
+     (Hide only the palette trigger — the theme MENU still anchors here when
+     opened from More → Theme.) */
+  .theme-wrap > .icon-btn, .header-right .ai-btn { display: none; }
+}
+@media (max-width: 600px) {
+  .app-title { font-size: 0.98rem; letter-spacing: 0; }
+  .lanterns { margin-left: 4px; gap: 4px; }
+  .header-left { gap: 6px; }
+}

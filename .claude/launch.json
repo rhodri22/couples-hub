@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "preview", "runtimeExecutable": "/Users/loveshack/.local/node/bin/npm", "runtimeArgs": ["run", "preview"], "port": 4173 },
+    { "name": "dev", "runtimeExecutable": "/Users/loveshack/.local/node/bin/npm", "runtimeArgs": ["run", "dev"], "port": 5173 }
+  ]
+}
