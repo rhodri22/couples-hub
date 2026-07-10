@@ -65,11 +65,34 @@ export default function App() {
   const [filterPerson, setFilterPerson] = useState('all')
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem('hub-theme') || 'lightgreen' } catch { return 'lightgreen' } })
   const [themeMenu, setThemeMenu] = useState(false)
-  useEffect(() => { document.documentElement.setAttribute('data-theme', theme); try { localStorage.setItem('hub-theme', theme) } catch {} }, [theme])
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => {
+      const resolved = theme === 'auto' ? (mq.matches ? 'midnight' : 'lightgreen') : theme
+      document.documentElement.setAttribute('data-theme', resolved)
+      // Keep the iOS status bar in step with the active theme
+      document.querySelector('meta[name="theme-color"]')
+        ?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--bg').trim())
+    }
+    apply()
+    try { localStorage.setItem('hub-theme', theme) } catch {}
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [theme])
+  function pickTheme(id) {
+    // Crossfade every themed surface for 350ms while the tokens swap
+    document.documentElement.classList.add('theme-x')
+    setTimeout(() => document.documentElement.classList.remove('theme-x'), 350)
+    setTheme(id)
+    setThemeMenu(false)
+  }
   const THEMES = [
-    { id: 'lightgreen', label: 'Light green', sw: 'linear-gradient(135deg,#7cc24a,#e85d8a)' },
-    { id: 'whimsical',  label: 'Whimsical',   sw: 'linear-gradient(135deg,#8a5fd6,#ff77b5)' },
-    { id: 'doggy',      label: 'Doggy',        sw: 'linear-gradient(135deg,#c8842b,#e8744f)' },
+    { id: 'auto',       label: 'Auto 🌗',     sw: 'linear-gradient(135deg,#eef3e3 0 50%,#0d1322 50% 100%)' },
+    { id: 'lightgreen', label: 'Light green', sw: 'linear-gradient(135deg,#eef3e3 0 34%,#4c8f26 34% 67%,#e85d8a 67% 100%)' },
+    { id: 'whimsical',  label: 'Whimsical',   sw: 'linear-gradient(135deg,#f4eefb 0 34%,#8657cc 34% 67%,#f0619f 67% 100%)' },
+    { id: 'doggy',      label: 'Doggy',       sw: 'linear-gradient(135deg,#f6ecd9 0 34%,#b26f1d 34% 67%,#e8744f 67% 100%)' },
+    { id: 'spree',      label: 'Spree 🌊',    sw: 'linear-gradient(135deg,#e9f1f4 0 34%,#2a84ab 34% 67%,#e86a8f 67% 100%)' },
+    { id: 'midnight',   label: 'Midnight 🌙', sw: 'linear-gradient(135deg,#0d1322 0 34%,#c9812f 34% 67%,#f58bae 67% 100%)' },
   ]
   const [filterCat, setFilterCat] = useState('all')
   const [calMonth, setCalMonth] = useState(new Date())
@@ -190,6 +213,7 @@ export default function App() {
   async function toggleComplete(task) {
     const nowDone = !task.completed
     const updated = { ...task, completed: nowDone, status: nowDone ? 'done' : 'todo', completed_at: nowDone ? new Date().toISOString() : null }
+    if (nowDone) { try { navigator.vibrate?.(10) } catch {} }
     await saveTask(updated)
     if (nowDone) await spawnNextIfNeeded(task)
   }
@@ -425,9 +449,19 @@ export default function App() {
   const filteredEvents = events.filter(e => filterPerson === 'all' || assigneeIds(e).length === 0 || assigneeIds(e).includes(filterPerson))
   const pendingCount = tasks.filter(t => !t.completed).length
 
+  // The Three Lanterns: one dot per family member, lit when they've completed
+  // something today. All three lit → the heart turns gold.
+  const LANTERN_FOLK = [['rhodri', 'var(--rhodri)'], ['becky', 'var(--becky)'], ['lana', 'var(--lana)']]
+  const todayISO = format(new Date(), 'yyyy-MM-dd')
+  const litToday = new Set(
+    tasks
+      .filter(t => t.completed && (t.completed_at || '').slice(0, 10) === todayISO)
+      .flatMap(t => assigneeIds(t))
+  )
+  const allLit = LANTERN_FOLK.every(([id]) => litToday.has(id))
+
   function headerAdd() {
     if (view === 'calendar') setEventModal({})
-    else if (view === 'notes') {}
     else setTaskModal({})
   }
 
@@ -435,8 +469,13 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="header-left">
-          <Heart size={20} className="header-heart" />
+          <Heart size={20} className={'header-heart' + (allLit ? ' all-lit' : '')} />
           <h1 className="app-title">Couple's Hub</h1>
+          <span className="lanterns" title="Lights up as each of you finishes something today">
+            {LANTERN_FOLK.map(([id, color]) => (
+              <span key={id} className={'lantern' + (litToday.has(id) ? ' lit' : '')} style={{ '--who': color }} />
+            ))}
+          </span>
         </div>
         <div className="header-right">
           <div className="theme-wrap">
@@ -444,7 +483,7 @@ export default function App() {
             {themeMenu && (
               <div className="theme-menu">
                 {THEMES.map(tm => (
-                  <button key={tm.id} className={theme === tm.id ? 'on' : ''} onClick={() => { setTheme(tm.id); setThemeMenu(false) }}>
+                  <button key={tm.id} className={theme === tm.id ? 'on' : ''} onClick={() => pickTheme(tm.id)}>
                     <span className="theme-sw" style={{ background: tm.sw }} />{tm.label}{theme === tm.id && <Check size={14} className="tm-check" />}
                   </button>
                 ))}
@@ -457,20 +496,9 @@ export default function App() {
           <button className="icon-btn ai-btn" onClick={() => setAiModal(true)} title="AI assistant">
             <Wand2 size={16} />
           </button>
-          <button className="icon-btn" onClick={() => setAwayModal(true)} title="Away / vacation mode">
-            <Plane size={16} className={away.length ? 'active-away' : ''} />
-          </button>
-          <button className="icon-btn" onClick={() => setSubscribeModal(true)} title="Subscribe in your calendar">
-            <CalendarPlus size={16} />
-          </button>
-          <button className="icon-btn" onClick={() => setEmailModal(true)} title="Email reminders">
-            <Mail size={16} />
-          </button>
           <SyncDot status={syncStatus} />
           {notifPerm !== 'granted' && <button className="icon-btn" onClick={enableNotifications} title="Enable notifications"><BellOff size={16} /></button>}
           {pendingCount > 0 && <span className="badge">{pendingCount}</span>}
-          {(view === 'home' || view === 'tasks' || view === 'calendar') &&
-            <button className="add-btn" onClick={headerAdd} title="Add"><Plus size={20} /></button>}
         </div>
       </header>
 
@@ -526,7 +554,10 @@ export default function App() {
               : <ListView   tasks={filteredTasks} away={away} onEdit={setTaskModal} onDelete={deleteTask} onToggle={toggleComplete} onSnooze={snooze} onSubtask={toggleSubtask} onSetStatus={setTaskStatus} />}
           </>
         )}
-        {view === 'calendar' && <CalendarView events={filteredEvents} tasks={filteredTasks} month={calMonth} setMonth={setCalMonth} onEditEvent={setEventModal} onAddOnDate={d => setEventModal({ start_date: format(d, 'yyyy-MM-dd'), end_date: format(d, 'yyyy-MM-dd') })} onQuickDelete={deleteEvent} onAddToCalendar={addEventToCalendar} />}
+        {view === 'calendar' && <>
+          <QuickAdd onAdd={quickAdd} onTemplates={() => setTplModal(true)} />
+          <CalendarView events={filteredEvents} tasks={filteredTasks} month={calMonth} setMonth={setCalMonth} onEditEvent={setEventModal} onAddOnDate={d => setEventModal({ start_date: format(d, 'yyyy-MM-dd'), end_date: format(d, 'yyyy-MM-dd') })} onQuickDelete={deleteEvent} onAddToCalendar={addEventToCalendar} />
+        </>}
         {view === 'us'       && <UsView tasks={tasks} dateIdeas={dateIdeas} moods={moods} rewards={rewards} whoami={whoami}
                                   onSaveMood={saveMood} onDeleteMoods={deleteAllMoods} onSaveReward={saveReward} onRedeem={redeemReward} onDeleteReward={deleteReward}
                                   onSaveDateIdea={saveDateIdea} onToggleDate={toggleDateDone} onDeleteDate={deleteDateIdea} onDateToCalendar={dateToCalendar}
@@ -535,6 +566,11 @@ export default function App() {
         {view === 'expenses' && <ExpensesView expenses={expenses} onSave={saveExpense} onToggleSettle={toggleSettle} onDelete={deleteExpense} onSettleAll={settleAll} />}
       </main>
 
+      {['home', 'tasks', 'calendar'].includes(view) &&
+        <button className="fab" onClick={headerAdd} title={view === 'calendar' ? 'New event' : 'New task'}>
+          <Plus size={26} />
+        </button>}
+
       {taskModal !== null && <TaskModal task={taskModal} away={away} onSave={async t => { await saveTask(t); setTaskModal(null) }} onClose={() => setTaskModal(null)} />}
       {eventModal !== null && <EventModal event={eventModal} onSave={async e => { const r = await saveEvent(e); if (r.ok) setEventModal(null); return r }} onDelete={async id => { const r = await deleteEvent(id); if (r.ok) setEventModal(null); return r }} onClose={() => setEventModal(null)} />}
       {tplModal && <TemplatesModal templates={templates} onUse={useTemplate} onSave={saveTemplate} onDelete={deleteTemplate} onClose={() => setTplModal(false)} />}
@@ -542,7 +578,7 @@ export default function App() {
       {subscribeModal && <SubscribeModal onClose={() => setSubscribeModal(false)} />}
       {emailModal && <EmailModal settings={settings} onSave={saveSettings} onError={showError} onClose={() => setEmailModal(false)} />}
       {moreSheet && <MoreSheet onClose={() => setMoreSheet(false)} goto={v => { setView(v); setMoreSheet(false) }}
-                      open={{ ai: () => { setAiModal(true); setMoreSheet(false) }, voice: () => { setVoiceModal(true); setMoreSheet(false) }, travel: () => { setTravelModal(true); setMoreSheet(false) }, templates: () => { setTplModal(true); setMoreSheet(false) }, away: () => { setAwayModal(true); setMoreSheet(false) }, email: () => { setEmailModal(true); setMoreSheet(false) }, subscribe: () => { setSubscribeModal(true); setMoreSheet(false) }, welcome: () => { setShowWelcome(true); setMoreSheet(false) } }}
+                      open={{ ai: () => { setAiModal(true); setMoreSheet(false) }, voice: () => { setVoiceModal(true); setMoreSheet(false) }, travel: () => { setTravelModal(true); setMoreSheet(false) }, templates: () => { setTplModal(true); setMoreSheet(false) }, away: () => { setAwayModal(true); setMoreSheet(false) }, email: () => { setEmailModal(true); setMoreSheet(false) }, subscribe: () => { setSubscribeModal(true); setMoreSheet(false) }, theme: () => { setThemeMenu(true); setMoreSheet(false) }, welcome: () => { setShowWelcome(true); setMoreSheet(false) } }}
                       whoami={whoami} away={away} />}
       {showWelcome && <WelcomeModal whoami={whoami} onChoose={chooseWhoami} onClearSample={clearSampleData} onClose={finishWelcome} demo={!supabase} />}
       {aiModal && <AiModal tasks={tasks} events={events} away={away} moods={moods} callAI={callAI} onApply={applySuggestion} onClose={() => setAiModal(false)} />}
@@ -657,7 +693,7 @@ function KanbanView({ tasks, away, onEdit, onDelete, onToggle, onMove, onSnooze,
             </div>
             <div className="kanban-cards">
               {colTasks.map(t => <TaskCard key={t.id} task={t} away={away} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onMove={onMove} onSnooze={onSnooze} onSubtask={onSubtask} />)}
-              {colTasks.length === 0 && <div className="empty-col">No tasks here</div>}
+              {colTasks.length === 0 && <div className="empty-col">Nothing here — lucky you 🌿</div>}
             </div>
           </div>
         )
@@ -719,7 +755,7 @@ function TaskCard({ task, away, onEdit, onDelete, onToggle, onMove, onSnooze, on
 
   return (
     <div className={`task-card ${task.completed ? 'completed' : ''} ${overdue && !paused ? 'overdue' : ''} ${paused ? 'paused' : ''}`}
-         style={{ background: `linear-gradient(135deg, ${person.soft}, var(--bg-3) 60%)`, borderLeft: `4px solid ${person.color}` }}>
+         style={{ background: `linear-gradient(135deg, ${person.soft}, var(--bg-3) 60%)`, '--who': person.color }}>
       <div className="card-body">
         <div className="card-top">
           <button className={`check-btn ${task.completed ? 'checked' : ''}`} onClick={() => onToggle(task)}>{task.completed && <Check size={12} />}</button>
@@ -811,7 +847,7 @@ function ListView({ tasks, away, onEdit, onDelete, onToggle, onSnooze, onSubtask
           })}
         </div>
       ))}
-      {tasks.length === 0 && <div className="empty-state"><Heart size={40} /><p>Nothing here yet — add your first task!</p></div>}
+      {tasks.length === 0 && <div className="empty-state"><Heart size={40} /><p>Nothing due — walk Lana? 🐾</p></div>}
     </div>
   )
 }
@@ -851,7 +887,7 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
   const [selectedDay, setSelectedDay] = useState(null)
   const monthStart = startOfMonth(month), monthEnd = endOfMonth(month)
   const days = eachDayOfInterval({ start: monthStart, end: monthEnd })
-  const startPad = monthStart.getDay()
+  const startPad = (monthStart.getDay() + 6) % 7
   const eventsOnDay = day => events.filter(e => eventOccursOn(e, day))
   const tasksOnDay = day => tasks.filter(t => t.due_date && isSameDay(parseISO(t.due_date), day))
   const selEvents = selectedDay ? eventsOnDay(selectedDay) : []
@@ -866,14 +902,17 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
     <div className="calendar-view">
       <div className="cal-header">
         <button onClick={() => setMonth(m => subMonths(m, 1))}><ChevronLeft size={18} /></button>
-        <h2 className="cal-month">{format(month, 'MMMM yyyy')}</h2>
+        <button className="cal-month" onClick={() => { setMonth(new Date()); setSelectedDay(null) }} title="Jump to today">
+          {format(month, 'MMMM yyyy')}
+          {format(month, 'yyyy-MM') !== format(new Date(), 'yyyy-MM') && <span className="today-jump" style={{ marginLeft: 8 }}>Today</span>}
+        </button>
         <button onClick={() => setMonth(m => addMonths(m, 1))}><ChevronRight size={18} /></button>
       </div>
       <button className="cal-new-event" onClick={() => onAddOnDate(selectedDay || new Date())}>
         <CalendarPlus size={17} /> {selectedDay ? `Add event on ${format(selectedDay, 'd MMM')}` : 'New event'}
       </button>
       <div className="cal-grid">
-        {['S','M','T','W','T','F','S'].map((d, i) => <div key={i} className="cal-weekday">{d}</div>)}
+        {['M','T','W','T','F','S','S'].map((d, i) => <div key={i} className="cal-weekday">{d}</div>)}
         {Array(startPad).fill(null).map((_, i) => <div key={`p${i}`} className="cal-cell empty" />)}
         {days.map(day => {
           const evs = eventsOnDay(day), tks = tasksOnDay(day)
@@ -899,7 +938,7 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
       {selectedDay && (
         <div className="cal-day-panel">
           <div className="cal-panel-header"><span>{format(selectedDay, 'EEEE, d MMMM yyyy')}</span><button className="add-day-btn" onClick={() => onAddOnDate(selectedDay)}><Plus size={14} /> Add event</button></div>
-          {selEvents.length === 0 && selTasks.length === 0 && <div className="cal-empty">Nothing scheduled — tap "Add event" to create one.</div>}
+          {selEvents.length === 0 && selTasks.length === 0 && <div className="cal-empty">This day is wide open ✨</div>}
           {selEvents.map(e => <CalEventRow key={e.id} e={e} onEdit={onEditEvent} onQuickDelete={onQuickDelete} onAddToCalendar={onAddToCalendar} />)}
           {selTasks.map(t => {
             const person = primaryPerson(t)
@@ -910,7 +949,7 @@ function CalendarView({ events, tasks, month, setMonth, onEditEvent, onAddOnDate
 
       <div className="cal-upcoming">
         <div className="cal-upcoming-head"><CalendarDays size={15} /> Upcoming events</div>
-        {upcoming.length === 0 && <div className="cal-empty">No upcoming events. Tap "New event" above to add one — birthdays, holidays, date nights and more.</div>}
+        {upcoming.length === 0 && <div className="cal-empty">Nothing on the horizon — plan something to look forward to 💫</div>}
         {upcoming.map(e => <CalEventRow key={e.id} e={e} onEdit={onEditEvent} onQuickDelete={onQuickDelete} onAddToCalendar={onAddToCalendar} showDate />)}
       </div>
     </div>
@@ -970,7 +1009,7 @@ function NotesView({ notes, events, tasks, onSave, onDelete }) {
         </div>
         <div className="notes-grid">
           {notes.map(n => { const p = getPerson(n.author); return <div key={n.id} className="note-card" style={{ borderLeft: `4px solid ${p.color}` }}><p className="note-text">{n.text}</p><div className="note-footer"><span className="note-author">{p.icon} {p.label}</span><button className="del-btn" onClick={() => onDelete(n.id)}><Trash2 size={12} /></button></div></div> })}
-          {notes.length === 0 && <div className="empty-state"><StickyNote size={40} /><p>No notes yet</p></div>}
+          {notes.length === 0 && <div className="empty-state"><StickyNote size={40} /><p>No notes yet — leave one for later 💌</p></div>}
         </div>
       </div>
     </div>
@@ -1863,13 +1902,13 @@ function VoiceAddModal({ onParse, onCreate, onClose }) {
       <div className="modal">
         <div className="modal-header"><h2><Mic size={18} style={{ verticalAlign: '-3px', marginRight: 6 }} />Add by voice</h2><button className="modal-close" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-form">
-          <p style={{ margin: '0 0 10px', color: 'var(--muted, #667)', fontSize: 13 }}>Say or type something like <em>"Walk Lana tomorrow 8am"</em> or <em>"Dentist next Tuesday at 3pm"</em>.</p>
+          <p style={{ margin: '0 0 10px', color: 'var(--ink-3)', fontSize: 13 }}>Say or type something like <em>"Walk Lana tomorrow 8am"</em> or <em>"Dentist next Tuesday at 3pm"</em>.</p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
             <textarea value={text} onChange={e => setText(e.target.value)} rows={2} placeholder="What do you want to add?" style={{ flex: 1, resize: 'vertical' }} />
-            <button className="btn-save" onClick={toggleMic} title="Speak" style={{ padding: '0 14px', background: listening ? '#c0453b' : undefined }}><Mic size={18} /></button>
+            <button className="btn-save" onClick={toggleMic} title="Speak" style={{ padding: '0 14px', background: listening ? 'var(--red)' : undefined }}><Mic size={18} /></button>
           </div>
           {!p && <div className="modal-actions"><button className="btn-cancel" onClick={onClose}>Cancel</button><button className="btn-save" onClick={understand} disabled={busy || !text.trim()}>{busy ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />} Understand</button></div>}
-          {err && <p style={{ color: '#c0453b', fontSize: 13, margin: '8px 0 0' }}>{err}</p>}
+          {err && <p style={{ color: 'var(--red)', fontSize: 13, margin: '8px 0 0' }}>{err}</p>}
 
           {p && (
             <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #e3e3da)', paddingTop: 14, display: 'grid', gap: 10 }}>
@@ -1916,10 +1955,10 @@ function TravelModal({ onParse, onAdd, onClose }) {
       <div className="modal">
         <div className="modal-header"><h2><Luggage size={18} style={{ verticalAlign: '-3px', marginRight: 6 }} />Import a trip</h2><button className="modal-close" onClick={onClose}><X size={18} /></button></div>
         <div className="modal-form">
-          <p style={{ margin: '0 0 10px', color: 'var(--muted, #667)', fontSize: 13 }}>Paste a flight, hotel or train confirmation email and it'll pull out the dates and add them to your calendar.</p>
+          <p style={{ margin: '0 0 10px', color: 'var(--ink-3)', fontSize: 13 }}>Paste a flight, hotel or train confirmation email and it'll pull out the dates and add them to your calendar.</p>
           <textarea value={text} onChange={e => setText(e.target.value)} rows={7} placeholder="Paste your booking confirmation here…" style={{ width: '100%', resize: 'vertical' }} />
           {!events && <div className="modal-actions"><button className="btn-cancel" onClick={onClose}>Cancel</button><button className="btn-save" onClick={scan} disabled={busy || !text.trim()}>{busy ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />} Find bookings</button></div>}
-          {err && <p style={{ color: '#c0453b', fontSize: 13, margin: '8px 0 0' }}>{err}</p>}
+          {err && <p style={{ color: 'var(--red)', fontSize: 13, margin: '8px 0 0' }}>{err}</p>}
 
           {events && events.length > 0 && (
             <div style={{ marginTop: 14, borderTop: '1px solid var(--line, #e3e3da)', paddingTop: 14 }}>
@@ -1927,8 +1966,8 @@ function TravelModal({ onParse, onAdd, onClose }) {
                 {events.map((e, i) => (
                   <div key={i} style={{ border: '1px solid var(--line, #e3e3da)', borderRadius: 10, padding: '10px 12px' }}>
                     <div style={{ fontWeight: 600 }}>{e.title}</div>
-                    <div style={{ fontSize: 12, color: 'var(--muted, #667)' }}>{e.start_date}{e.start_time ? ` · ${e.start_time}` : ''}{e.end_date && e.end_date !== e.start_date ? ` → ${e.end_date}` : ''}</div>
-                    {e.notes && <div style={{ fontSize: 12, color: 'var(--muted, #667)', marginTop: 3 }}>{e.notes}</div>}
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{e.start_date}{e.start_time ? ` · ${e.start_time}` : ''}{e.end_date && e.end_date !== e.start_date ? ` → ${e.end_date}` : ''}</div>
+                    {e.notes && <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 3 }}>{e.notes}</div>}
                   </div>
                 ))}
               </div>
@@ -1968,6 +2007,7 @@ function MoreSheet({ onClose, goto, open, whoami, away }) {
             <Row icon={<Plane size={17} />} label="Away / vacation" sub={away.length ? `${away.map(id => getPerson(id).label).join(' & ')} away` : undefined} onClick={open.away} />
             <Row icon={<Mail size={17} />} label="Email reminders" onClick={open.email} />
             <Row icon={<CalendarPlus size={17} />} label="Subscribe in your calendar" onClick={open.subscribe} />
+            <Row icon={<Palette size={17} />} label="Theme" sub="Light green, Whimsical, Doggy, Spree, Midnight, Auto" onClick={open.theme} />
             <Row icon={<Users size={17} />} label={me && me.adult ? `You're ${me.label} on this phone` : 'Who are you / invite partner'} onClick={open.welcome} />
           </div>
         </div>
@@ -2191,7 +2231,7 @@ function ExpensesView({ expenses, onSave, onToggleSettle, onDelete, onSettleAll 
 
       <div className="expense-list">
         {visible.map(e => <Row key={e.id} e={e} />)}
-        {visible.length === 0 && <div className="expense-empty">{expenses.length === 0 ? 'No expenses yet. Add one when you next pay for something together.' : 'Nothing here with these filters.'}</div>}
+        {visible.length === 0 && <div className="expense-empty">{expenses.length === 0 ? 'No expenses yet — cheap week! 🎉' : 'Nothing here with these filters.'}</div>}
       </div>
     </div>
   )
