@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Plus, X, Check, List, Columns, Bell, BellOff, ChevronLeft, ChevronRight, Palette,
   RefreshCw, AlertCircle, Pencil, Trash2, Clock, Heart, CalendarDays, StickyNote,
@@ -135,7 +135,23 @@ export default function App() {
   // Keep this device subscribed to background push once permission is granted.
   useEffect(() => { if (whoami && notifPerm === 'granted') ensurePushSubscribed(whoami) }, [whoami, notifPerm])
 
-  async function loadAll() { await Promise.all([loadTasks(), loadEvents(), loadNotes(), loadTemplates(), loadSettings(), loadMoods(), loadRewards(), loadDateIdeas(), loadExpenses()]) }
+  // Full refresh = 9 parallel queries, and several triggers fire almost together
+  // (mount + realtime SUBSCRIBED; visibilitychange + focus on every app return).
+  // Share one in-flight run and skip refetches while the data is still fresh, so
+  // a quick app switch costs nothing. Per-table realtime handlers are untouched,
+  // so a partner's live edit still lands instantly.
+  const loadAllInFlight = useRef(null)
+  const lastLoadAt = useRef(0)
+  const FRESH_MS = 15000
+
+  async function loadAll({ force = false } = {}) {
+    if (loadAllInFlight.current) return loadAllInFlight.current          // coalesce
+    if (!force && Date.now() - lastLoadAt.current < FRESH_MS) return     // still fresh
+    const run = Promise.all([loadTasks(), loadEvents(), loadNotes(), loadTemplates(), loadSettings(), loadMoods(), loadRewards(), loadDateIdeas(), loadExpenses()])
+      .finally(() => { lastLoadAt.current = Date.now(); loadAllInFlight.current = null })
+    loadAllInFlight.current = run
+    return run
+  }
   function flash() { setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 1400) }
   function chooseWhoami(id) { setWhoami(id); try { localStorage.setItem('hub-whoami', id) } catch {} }
   function finishWelcome() { setShowWelcome(false); try { localStorage.setItem('hub-welcomed', '1') } catch {} }
